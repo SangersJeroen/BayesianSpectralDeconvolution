@@ -18,7 +18,7 @@ def gaussian_rbf(x: Array, mu: float, b: float) -> Array:
     return np.exp(-0.5 * b * (x - mu) ** 2)
 
 
-def rbf_spectrum(x: Array, theta: Array) -> Array:
+def gaussian_rbf_spectrum(x: Array, theta: Array) -> Array:
     """
     Evaluate the model
 
@@ -40,5 +40,5 @@ def rbf_spectrum(x: Array, theta: Array) -> Array:
 
 def mean_squared_error(x: Array, y: Array, theta: Array) -> float:
     """Paper's E(theta) in Eq. (3): 1/(2n) * sum squared residuals."""
-    residual = y - rbf_spectrum(x, theta)
+    residual = y - gaussian_rbf_spectrum(x, theta)
     return float(0.5 * np.mean(residual ** 2))

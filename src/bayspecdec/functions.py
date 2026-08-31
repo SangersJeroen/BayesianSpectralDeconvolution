@@ -13,11 +13,5 @@ def beta_schedule(L: int) -> Array:
     """
     if L < 2:
         raise ValueError("Need at least two temperatures")
-    beta = np.empty(L, dtype=float)
-    beta[0] = 0.0
-    for l in range(1, L):
-        # l in the paper is 1-indexed. Here index l is 0-indexed, so paper l=l+1.
-        paper_l = l + 1
-        beta[l] = 1.5 ** (paper_l - L)
-    beta[-1] = 1.0
-    return beta
+    beta = [0] + [1.5**(i+1-L) for i in range(1, L)]
+    return np.asarray(beta)

@@ -1,9 +1,14 @@
-from math import lgamma
 import numpy as np
 from .prior import SyntheticPrior
 
+from scipy.special import gamma
 
 Array = np.ndarray
+
+
+def lgamma(zs: Array | int | float) -> Array:
+    return np.log(np.abs(gamma(zs)))
+
 
 def logsumexp(values: Array) -> float:
     """Stable log(sum(exp(values)))."""
@@ -20,19 +25,13 @@ def logmeanexp(values: Array) -> float:
     return logsumexp(values) - np.log(values.size)
 
 
-def log_gamma_pdf_positive(x: float, shape: float, rate: float) -> float:
+def log_gamma_pdf_positive(x: Array, shape: int | float, rate: float) -> Array:
     """Log Gamma(shape, rate) density, x>0."""
-    if x <= 0:
-        return -np.inf
-    return (
-        shape * np.log(rate)
-        - lgamma(shape)
-        + (shape - 1.0) * np.log(x)
-        - rate * x
-    )
+    out = shape * np.log(rate) - lgamma(shape) + (shape - 1.0) * np.log(x) - rate * x
+    return np.where(x <= 0, -np.inf, out)
 
 
-def log_normal_pdf(x: float, mean: float, precision: float) -> float:
+def log_normal_pdf(x: Array, mean: int | float, precision: float) -> Array:
     """Log N(mean, precision^{-1}) density."""
     return 0.5 * np.log(precision / (2.0 * np.pi)) - 0.5 * precision * (x - mean) ** 2
 
@@ -48,12 +47,11 @@ def log_prior_theta(theta: Array, K: int, prior: SyntheticPrior) -> float:
         raise ValueError("theta must contain 3*K entries")
 
     a = theta[:K]
-    mu = theta[K:2 * K]
-    b = theta[2 * K:]
+    mu = theta[K : 2 * K]
+    b = theta[2 * K :]
 
     value = 0.0
-    for ak, muk, bk in zip(a, mu, b):
-        value += log_gamma_pdf_positive(ak, prior.eta_a, prior.lambda_a)
-        value += log_normal_pdf(muk, prior.nu0, prior.xi0)
-        value += log_gamma_pdf_positive(bk, prior.eta_b, prior.lambda_b)
+    value += np.sum(log_gamma_pdf_positive(a, prior.eta_a, prior.lambda_a))
+    value += np.sum(log_normal_pdf(mu, prior.nu0, prior.xi0))
+    value += np.sum(log_gamma_pdf_positive(b, prior.eta_b, prior.lambda_b))
     return float(value)
