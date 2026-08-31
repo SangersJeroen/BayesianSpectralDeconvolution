@@ -5,7 +5,8 @@ from .parallel_tempering import ExchangeResult, ExchangeMonteCarlo
 from .evidence import EvidenceEstimate, estimate_log_evidence_from_exchange
 from .bayesian_rbf import BayesianRBFProblem
 
-from .functions import paper_beta_schedule
+from .functions import beta_schedule
+from .prior import SyntheticPrior
 
 Array = np.ndarray
 
@@ -51,7 +52,7 @@ def run_model_selection(
     """Run exchange MC independently for each candidate K."""
     runs = []
     master_rng = np.random.default_rng(seed)
-    beta = paper_beta_schedule(L)
+    beta = beta_schedule(L)
 
     for K in K_values:
         # Use a fresh deterministic stream per K for reproducibility.

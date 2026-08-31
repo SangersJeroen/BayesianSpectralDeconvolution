@@ -2,7 +2,7 @@ import numpy as np
 
 Array = np.ndarray
 
-def paper_beta_schedule(L: int) -> Array:
+def beta_schedule(L: int) -> Array:
     """
     Temperature / inverse-temperature ladder used in Section 3.1:
 

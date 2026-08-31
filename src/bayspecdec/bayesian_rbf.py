@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from .gaussian_rbf import mean_squared_error
 from .likelihood import log_prior_theta
+from .prior import SyntheticPrior
 
 Array = np.ndarray
 

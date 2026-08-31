@@ -15,3 +15,11 @@ maximum performance. It implements:
   5. Marginal-likelihood estimation using the paper's product identity
   6. Model selection over K
 """
+
+from .fake_data import make_paper_like_synthetic_data
+from .functions import beta_schedule
+from .bayesian_rbf import BayesianRBFProblem
+from .prior import SyntheticPrior
+from .parallel_tempering import ExchangeMonteCarlo
+from .evidence import estimate_log_evidence_from_exchange
+from .model_selection import ModelRun, run_model_selection

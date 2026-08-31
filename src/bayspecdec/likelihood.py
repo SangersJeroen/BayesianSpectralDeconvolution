@@ -1,4 +1,6 @@
+from math import lgamma
 import numpy as np
+from .prior import SyntheticPrior
 
 
 Array = np.ndarray
