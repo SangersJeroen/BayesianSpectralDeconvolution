@@ -1,25 +1,21 @@
 """
 Bayesian spectral deconvolution with exchange Monte Carlo (parallel tempering).
-
-Educational implementation based on:
-    Nagata, K., Sugita, S., & Okada, M. (2012),
-    "Bayesian spectral deconvolution with the exchange Monte Carlo method",
-    Neural Networks 28, 82-89.
-
-This file is intentionally verbose. It is designed for learning rather than
-maximum performance. It implements:
-  1. Gaussian RBF spectral model
-  2. Bayesian posterior with the paper's priors
-  3. Random-walk Metropolis within each temperature
-  4. Exchange / parallel-tempering swaps between adjacent temperatures
-  5. Marginal-likelihood estimation using the paper's product identity
-  6. Model selection over K
+Refactored into a modular, extensible package.
 """
 
-from .fake_data import make_paper_like_synthetic_data
+from .basis import GaussianBasis, LorentzianBasis
+from .parameters import DefaultParameterization
+from .priors import (
+    GammaPrior,
+    NormalPrior,
+    IndependentProductPrior,
+    paper_synthetic_prior
+)
+from .likelihoods import GaussianNoise
+from .models import SpectralModel
+from .samplers.metropolis import RandomWalkMetropolis, metropolis_kernel_factory
+from .tempering import ParallelTempering, ExchangeResult
+from .evidence import EvidenceEstimate, estimate_evidence
+from .model_selection import ModelRun, select_model_size
 from .functions import beta_schedule
-from .bayesian_rbf import BayesianRBFProblem
-from .prior import SyntheticPrior
-from .parallel_tempering import ExchangeMonteCarlo
-from .evidence import estimate_log_evidence_from_exchange
-from .model_selection import ModelRun, run_model_selection
+from .data import make_paper_like_synthetic_data

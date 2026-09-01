@@ -1,9 +1,7 @@
-from dataclasses import dataclass
 import numpy as np
-
-from typing import Optional
-
-from .bayesian_rbf import BayesianRBFProblem
+from dataclasses import dataclass
+from typing import Optional, Protocol
+from ..models import SpectralModel
 
 Array = np.ndarray
 
@@ -11,6 +9,7 @@ Array = np.ndarray
 class MetropolisState:
     theta: Array
     log_target: float
+    energy: float
     accepted: int = 0
     attempted: int = 0
 
@@ -18,32 +17,26 @@ class MetropolisState:
     def acceptance_rate(self) -> float:
         return self.accepted / self.attempted if self.attempted else np.nan
 
+class MCMCKernel(Protocol):
+    def step(self, state: MetropolisState) -> MetropolisState:
+        ...
 
 class RandomWalkMetropolis:
     """
     Simple Gaussian random-walk Metropolis sampler.
-
-    Proposal:
-        theta' = theta + Normal(0, proposal_std^2)
-
-    The proposal is symmetric, so the proposal densities cancel and
-    acceptance is min(1, exp(log_target' - log_target)).
     """
-
     def __init__(
         self,
-        problem: BayesianRBFProblem,
+        model: SpectralModel,
         beta: float,
         rng: np.random.Generator,
         proposal_scales: Optional[Array] = None,
-    ) -> None:
-        self.problem = problem
+    ):
+        self.model = model
         self.beta = float(beta)
         self.rng = rng
         if proposal_scales is None:
-            # Crude defaults that work for the educational demo. In a serious
-            # implementation, tune these using pilot acceptance rates.
-            K = problem.K
+            K = model.parameterization.K
             proposal_scales = np.concatenate([
                 np.full(K, 0.03),   # strengths
                 np.full(K, 0.02),   # centers
@@ -53,14 +46,18 @@ class RandomWalkMetropolis:
 
     def step(self, state: MetropolisState) -> MetropolisState:
         proposal = state.theta + self.rng.normal(0.0, self.proposal_scales)
-        proposal_log_target = self.problem.log_target(proposal, self.beta)
+        proposal_log_target = self.model.log_tempered_target(proposal, self.beta)
 
         log_alpha = proposal_log_target - state.log_target
-        accept = np.log(self.rng.random()) < min(0.0, log_alpha)
+        accept = np.log(self.rng.random()) < min(0.0, float(log_alpha))
 
         state.attempted += 1
         if accept:
             state.theta = proposal
             state.log_target = proposal_log_target
+            state.energy = self.model.energy(proposal)
             state.accepted += 1
         return state
+
+def metropolis_kernel_factory(model: SpectralModel, beta: float, rng: np.random.Generator, proposal_scales: Optional[Array] = None) -> RandomWalkMetropolis:
+    return RandomWalkMetropolis(model, beta, rng, proposal_scales)

@@ -1,4 +1,4 @@
-from .gaussian_rbf import gaussian_rbf_spectrum
+from .basis import GaussianBasis
 
 import numpy as np
 
@@ -27,8 +27,12 @@ def make_paper_like_synthetic_data(
         x = np.linspace(0.0, 3.0, n_points)
     else:
         x = np.arange(0.0, 3.0 + 1e-12, 0.01)
-    theta_star = np.concatenate([PAPER_AMPLITUDES, PAPER_CENTERS, PAPER_B])
-    y_true = gaussian_rbf_spectrum(x, theta_star)
+    
+    basis = GaussianBasis()
+    params = np.stack([PAPER_CENTERS, PAPER_B])
+    basis_eval = basis.evaluate(x, params)
+    y_true = PAPER_AMPLITUDES @ basis_eval
+    
     rng = np.random.default_rng(seed)
     y = y_true + rng.normal(0.0, np.sqrt(sigma2), size=x.size)
     return x, y, y_true
