@@ -3,13 +3,14 @@ from typing import Protocol, runtime_checkable
 
 Array = np.ndarray
 
+
 @runtime_checkable
 class BasisFunction(Protocol):
     name: str
     n_parameters_per_basis: int
 
-    def evaluate(self, x: Array, params: Array) -> Array:
-        ...
+    def evaluate(self, x: Array, params: Array) -> Array: ...
+
 
 class GaussianBasis:
     name = "Gaussian"
@@ -26,6 +27,7 @@ class GaussianBasis:
         b = params[1]
         # Broadcasting: b[:, None] * (x[None, :] - mu[:, None])**2
         return np.exp(-0.5 * b[:, None] * (x[None, :] - mu[:, None]) ** 2)
+
 
 class LorentzianBasis:
     name = "Lorentzian"

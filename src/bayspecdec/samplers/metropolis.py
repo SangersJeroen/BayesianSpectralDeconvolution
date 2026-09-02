@@ -41,7 +41,7 @@ class RandomWalkMetropolis:
         ndim: int = model.parameterization.ndim
         if proposal_scales is None:
             K = model.parameterization.K
-            proposal_scales = np.concatenate([np.full(K, 0.5)]*ndim)
+            proposal_scales = np.concatenate([np.full(K, 0.5)] * ndim)
         else:
             proposal_scales = np.tile(proposal_scales, reps=ndim)
         self.proposal_scales = np.asarray(proposal_scales, dtype=float)

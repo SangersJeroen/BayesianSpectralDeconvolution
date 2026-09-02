@@ -2,6 +2,7 @@ import numpy as np
 
 Array = np.ndarray
 
+
 def beta_schedule(L: int) -> Array:
     """
     Temperature / inverse-temperature ladder used in Section 3.1:
@@ -13,5 +14,5 @@ def beta_schedule(L: int) -> Array:
     """
     if L < 2:
         raise ValueError("Need at least two temperatures")
-    beta = [0] + [1.5**(i+1-L) for i in range(1, L)]
+    beta = [0] + [1.5 ** (i + 1 - L) for i in range(1, L)]
     return np.asarray(beta)

@@ -3,6 +3,7 @@ from typing import Protocol, runtime_checkable
 
 Array = np.ndarray
 
+
 @runtime_checkable
 class Parameterization(Protocol):
     ndim: int
@@ -12,11 +13,13 @@ class Parameterization(Protocol):
     def unpack(self, theta: Array): ...
     def validate(self, theta: Array) -> None: ...
 
+
 class DefaultParameterization:
     """
     Standard parameterization from the paper.
     theta = [a_1...a_K, mu_1...mu_K, b_1...b_K]
     """
+
     def __init__(self, K: int):
         self.K = K
         self.ndim = 3 * K
@@ -27,7 +30,11 @@ class DefaultParameterization:
 
     def unpack(self, theta: Array) -> tuple[Array, Array, Array]:
         theta = np.asarray(theta, dtype=float)
-        return theta[..., :self.K], theta[..., self.K:2 * self.K], theta[..., 2 * self.K:]
+        return (
+            theta[..., : self.K],
+            theta[..., self.K : 2 * self.K],
+            theta[..., 2 * self.K :],
+        )
 
     def validate(self, theta: Array) -> None:
         if theta.size != self.ndim:

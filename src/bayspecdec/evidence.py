@@ -5,6 +5,7 @@ from .tempering import ExchangeResult
 
 Array = np.ndarray
 
+
 def logsumexp(values: Array) -> float:
     values = np.asarray(values, dtype=float)
     m = np.max(values)
@@ -12,15 +13,18 @@ def logsumexp(values: Array) -> float:
         return float(m)
     return float(m + np.log(np.sum(np.exp(values - m))))
 
+
 def logmeanexp(values: Array) -> float:
     values = np.asarray(values, dtype=float)
     return logsumexp(values) - np.log(values.size)
+
 
 @dataclass
 class EvidenceEstimate:
     log_z: float
     log_ratios: Array
     ratio_standard_errors: Array
+
 
 def estimate_evidence(
     model: SpectralModel,
@@ -29,17 +33,17 @@ def estimate_evidence(
     """
     Estimate log Z(1) using Eq. (10).
     """
-    n = model.n
-    
+    n: int | float = model.n
+
     # Needs sigma2 for the paper formula
-    if hasattr(model.likelihood, 'sigma2'):
-        sigma2 = model.likelihood.sigma2
+    if hasattr(model.likelihood, "sigma2"):
+        sigma2: int | float = model.likelihood.sigma2
         log_ratios = []
         ratio_se = []
 
-        for l in range(result.beta.size - 1):
-            delta_beta = result.beta[l + 1] - result.beta[l]
-            energies = result.energy_trace_by_temperature[l]
+        for l_index in range(result.beta.size - 1):
+            delta_beta = result.beta[l_index + 1] - result.beta[l_index]
+            energies = result.energy_trace_by_temperature[l_index]
             if energies.size == 0:
                 raise ValueError("No samples available for evidence estimation")
 
@@ -65,6 +69,8 @@ def estimate_evidence(
         )
     else:
         # Generic case: uses full log_likelihood differences
-        # But wait, we'd need log_likelihood evaluated for all samples. 
+        # But wait, we'd need log_likelihood evaluated for all samples.
         # For now, just raise an error or assume we only use models with energies/sigma2.
-        raise NotImplementedError("Evidence estimation currently requires a likelihood with sigma2 and energies.")
+        raise NotImplementedError(
+            "Evidence estimation currently requires a likelihood with sigma2 and energies."
+        )

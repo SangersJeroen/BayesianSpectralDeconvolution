@@ -8,6 +8,7 @@ from .models import SpectralModel
 
 Array = np.ndarray
 
+
 @dataclass
 class ModelRun:
     K: int
@@ -23,10 +24,9 @@ class ModelRun:
     def posterior_mode_sample(self) -> Array:
         """Approximate MAP using the beta=1 samples."""
         samples = self.exchange_result.samples_by_temperature[-1]
-        scores = np.asarray(
-            [self.model.log_posterior(theta) for theta in samples]
-        )
+        scores = np.asarray([self.model.log_posterior(theta) for theta in samples])
         return samples[np.argmax(scores)]
+
 
 def select_model_size(
     model_factory: Callable[[int], SpectralModel],
@@ -43,10 +43,10 @@ def select_model_size(
     for K in K_values:
         child_seed = int(master_rng.integers(0, 2**32 - 1))
         rng = np.random.default_rng(child_seed)
-        
+
         model = model_factory(K)
         sampler = sampler_factory(model, rng)
-        
+
         result = sampler.run(
             burn_in=burn_in,
             samples=samples,
@@ -54,10 +54,10 @@ def select_model_size(
             record_every=1,
             store_state_trace=False,
         )
-        
+
         evidence = estimate_evidence(model, result)
         runs.append(ModelRun(K, model, result, evidence))
-        
+
         print(
             f"K={K:2d} | stochastic complexity -log Z = {runs[-1].stochastic_complexity: .3f} "
             f"| beta=1 MH acc={result.within_acceptance[-1]:.3f} "
