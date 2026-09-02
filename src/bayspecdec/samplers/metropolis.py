@@ -5,6 +5,7 @@ from ..models import SpectralModel
 
 Array = np.ndarray
 
+
 @dataclass
 class MetropolisState:
     theta: Array
@@ -17,14 +18,16 @@ class MetropolisState:
     def acceptance_rate(self) -> float:
         return self.accepted / self.attempted if self.attempted else np.nan
 
+
 class MCMCKernel(Protocol):
-    def step(self, state: MetropolisState) -> MetropolisState:
-        ...
+    def step(self, state: MetropolisState) -> MetropolisState: ...
+
 
 class RandomWalkMetropolis:
     """
     Simple Gaussian random-walk Metropolis sampler.
     """
+
     def __init__(
         self,
         model: SpectralModel,
@@ -35,13 +38,12 @@ class RandomWalkMetropolis:
         self.model = model
         self.beta = float(beta)
         self.rng = rng
+        ndim: int = model.parameterization.ndim
         if proposal_scales is None:
             K = model.parameterization.K
-            proposal_scales = np.concatenate([
-                np.full(K, 0.03),   # strengths
-                np.full(K, 0.02),   # centers
-                np.full(K, 2.0),    # b parameters
-            ])
+            proposal_scales = np.concatenate([np.full(K, 0.5)]*ndim)
+        else:
+            proposal_scales = np.tile(proposal_scales, reps=ndim)
         self.proposal_scales = np.asarray(proposal_scales, dtype=float)
 
     def step(self, state: MetropolisState) -> MetropolisState:
@@ -59,5 +61,11 @@ class RandomWalkMetropolis:
             state.accepted += 1
         return state
 
-def metropolis_kernel_factory(model: SpectralModel, beta: float, rng: np.random.Generator, proposal_scales: Optional[Array] = None) -> RandomWalkMetropolis:
+
+def metropolis_kernel_factory(
+    model: SpectralModel,
+    beta: float,
+    rng: np.random.Generator,
+    proposal_scales: Optional[Array] = None,
+) -> RandomWalkMetropolis:
     return RandomWalkMetropolis(model, beta, rng, proposal_scales)

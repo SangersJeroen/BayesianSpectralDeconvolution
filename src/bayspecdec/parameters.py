@@ -27,7 +27,7 @@ class DefaultParameterization:
 
     def unpack(self, theta: Array) -> tuple[Array, Array, Array]:
         theta = np.asarray(theta, dtype=float)
-        return theta[:self.K], theta[self.K:2 * self.K], theta[2 * self.K:]
+        return theta[..., :self.K], theta[..., self.K:2 * self.K], theta[..., 2 * self.K:]
 
     def validate(self, theta: Array) -> None:
         if theta.size != self.ndim:
