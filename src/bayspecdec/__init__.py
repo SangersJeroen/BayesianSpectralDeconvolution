@@ -11,7 +11,7 @@ from .priors import (
     IndependentProductPrior,
     paper_synthetic_prior,
 )
-from .likelihoods import GaussianNoise
+from .likelihoods import GaussianNoise, PoissonNoise
 from .models import SpectralModel
 from .samplers.metropolis import RandomWalkMetropolis, metropolis_kernel_factory
 from .tempering import ParallelTempering, ExchangeResult
@@ -29,6 +29,7 @@ __all__ = [
     "IndependentProductPrior",
     "paper_synthetic_prior",
     "GaussianNoise",
+    "PoissonNoise",
     "SpectralModel",
     "RandomWalkMetropolis",
     "metropolis_kernel_factory",

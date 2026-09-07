@@ -1,3 +1,4 @@
+import tqdm
 import numpy as np
 from typing import Optional, Callable
 from dataclasses import dataclass
@@ -111,14 +112,14 @@ class ParallelTempering:
                     if self._attempt_swap(states, l_index):
                         exchange_accepts[l_index] += 1
 
-        for step in range(1, burn_in + 1):
+        for step in tqdm.tqdm(range(1, burn_in + 1)):
             one_step(step)
 
         samples_by_temperature = [[] for _ in range(self.L)]
         energy_trace_by_temperature = [[] for _ in range(self.L)]
         raw_state_trace = []
 
-        for step in range(1, samples + 1):
+        for step in tqdm.tqdm(range(1, samples + 1)):
             one_step(burn_in + step)
             if step % record_every == 0:
                 if store_state_trace:
