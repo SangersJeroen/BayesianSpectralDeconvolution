@@ -20,8 +20,9 @@ class MetropolisState:
 
 
 class MCMCKernel(Protocol):
-    def step(self, state: MetropolisState, is_warmup: bool = False) -> MetropolisState:
-        ...
+    def step(
+        self, state: MetropolisState, is_warmup: bool = False
+    ) -> MetropolisState: ...
 
 
 class RandomWalkMetropolis:

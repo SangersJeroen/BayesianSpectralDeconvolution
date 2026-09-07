@@ -13,12 +13,12 @@ Implements:
 from __future__ import annotations
 
 import numpy as np
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 from ..models import SpectralModel
 from .metropolis import MetropolisState, MCMCKernel
-from .adaptation import StepSizeAdaptation, WelfordCovariance
+from .adaptation import StepSizeAdaptation
 
 Array = np.ndarray
 
@@ -26,6 +26,7 @@ Array = np.ndarray
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class HMCConfig:
@@ -49,6 +50,7 @@ class HMCConfig:
         If True, dual-averaging adaptation is active during warmup steps
         (``is_warmup=True`` in ``step``).
     """
+
     num_steps: int
     step_size: float
     target_accept: float = 0.8
@@ -68,6 +70,7 @@ class HMCConfig:
 # Gradient utility
 # ---------------------------------------------------------------------------
 
+
 def numerical_gradient(
     f: Callable[[Array], float],
     x: Array,
@@ -81,12 +84,14 @@ def numerical_gradient(
     """
     grad = np.empty_like(x)
     for i in range(x.size):
-        x_plus = x.copy(); x_plus[i] += eps
-        x_minus = x.copy(); x_minus[i] -= eps
+        x_plus = x.copy()
+        x_plus[i] += eps
+        x_minus = x.copy()
+        x_minus[i] -= eps
         fp = f(x_plus)
         fm = f(x_minus)
         if not np.isfinite(fp) or not np.isfinite(fm):
-            grad[i] = 0.0           # best-effort; caller should detect bad H
+            grad[i] = 0.0  # best-effort; caller should detect bad H
         else:
             grad[i] = (fp - fm) / (2.0 * eps)
     return grad
@@ -95,6 +100,7 @@ def numerical_gradient(
 # ---------------------------------------------------------------------------
 # Leapfrog integrator
 # ---------------------------------------------------------------------------
+
 
 def leapfrog(
     theta: Array,
@@ -140,6 +146,7 @@ def leapfrog(
 # HMC kernel
 # ---------------------------------------------------------------------------
 
+
 class HamiltonianMonteCarlo(MCMCKernel):
     """
     Fixed-trajectory HMC kernel.
@@ -163,7 +170,8 @@ class HamiltonianMonteCarlo(MCMCKernel):
 
         ndim = model.parameterization.ndim
         self.mass_matrix = (
-            np.ones(ndim) if mass_matrix is None
+            np.ones(ndim)
+            if mass_matrix is None
             else np.asarray(mass_matrix, dtype=float).copy()
         )
         self.inverse_mass_matrix = 1.0 / self.mass_matrix
@@ -173,7 +181,8 @@ class HamiltonianMonteCarlo(MCMCKernel):
                 initial_step_size=config.step_size,
                 target_accept=config.target_accept,
             )
-            if config.adapt_step_size else None
+            if config.adapt_step_size
+            else None
         )
         # Divergence counter (informational)
         self.n_divergent = 0
@@ -202,7 +211,8 @@ class HamiltonianMonteCarlo(MCMCKernel):
         # Select step size
         if self.adaptation is not None:
             eps = (
-                self.adaptation.current_step_size() if is_warmup
+                self.adaptation.current_step_size()
+                if is_warmup
                 else self.adaptation.final_step_size()
             )
         else:
@@ -218,7 +228,9 @@ class HamiltonianMonteCarlo(MCMCKernel):
         divergent = False
         try:
             theta1, p1 = leapfrog(
-                state.theta, p0, eps,
+                state.theta,
+                p0,
+                eps,
                 self.config.num_steps,
                 self.grad_potential_energy,
                 self.inverse_mass_matrix,
@@ -242,7 +254,9 @@ class HamiltonianMonteCarlo(MCMCKernel):
             self.n_divergent += 1
 
         # 4. Accept / reject
-        accept = (not divergent) and (np.log(self.rng.random()) < np.log(alpha + 1e-300))
+        accept = (not divergent) and (
+            np.log(self.rng.random()) < np.log(alpha + 1e-300)
+        )
 
         state.attempted += 1
         if accept:
@@ -261,6 +275,7 @@ class HamiltonianMonteCarlo(MCMCKernel):
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
 
 def hmc_kernel_factory(
     model: SpectralModel,

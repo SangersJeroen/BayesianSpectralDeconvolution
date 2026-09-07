@@ -26,8 +26,8 @@ mathematically superior but more complex; it can be swapped in as a future
 from __future__ import annotations
 
 import numpy as np
-from dataclasses import dataclass, field
-from typing import Callable, Optional
+from dataclasses import dataclass
+from typing import Optional
 
 from ..models import SpectralModel
 from .metropolis import MetropolisState, MCMCKernel
@@ -40,6 +40,7 @@ Array = np.ndarray
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class NUTSConfig:
@@ -62,6 +63,7 @@ class NUTSConfig:
     adapt_step_size:
         Enable dual-averaging step-size adaptation during warmup.
     """
+
     step_size: float
     target_accept: float = 0.8
     max_tree_depth: int = 10
@@ -81,23 +83,26 @@ class NUTSConfig:
 # Tree-building sub-structures
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _LeafResult:
     """Return type from the base case of ``_build_tree``."""
+
     theta_minus: Array
     p_minus: Array
     theta_plus: Array
     p_plus: Array
     theta_proposal: Array
-    n_valid: int           # number of slice-valid states in this sub-tree
-    divergent: bool        # did any step diverge?
-    sum_accept: float      # cumulative accept prob for adaptation
-    n_accept: int          # count for the above
+    n_valid: int  # number of slice-valid states in this sub-tree
+    divergent: bool  # did any step diverge?
+    sum_accept: float  # cumulative accept prob for adaptation
+    n_accept: int  # count for the above
 
 
 # ---------------------------------------------------------------------------
 # U-turn criterion
 # ---------------------------------------------------------------------------
+
 
 def is_uturn(
     theta_minus: Array,
@@ -123,6 +128,7 @@ def is_uturn(
 # NUTS kernel
 # ---------------------------------------------------------------------------
 
+
 class NoUTurnSampler(MCMCKernel):
     """
     NUTS kernel (slice-based, Algorithm 3 of Hoffman & Gelman 2014).
@@ -145,7 +151,8 @@ class NoUTurnSampler(MCMCKernel):
 
         ndim = model.parameterization.ndim
         self.mass_matrix = (
-            np.ones(ndim) if mass_matrix is None
+            np.ones(ndim)
+            if mass_matrix is None
             else np.asarray(mass_matrix, dtype=float).copy()
         )
         self.inverse_mass_matrix = 1.0 / self.mass_matrix
@@ -155,7 +162,8 @@ class NoUTurnSampler(MCMCKernel):
                 initial_step_size=config.step_size,
                 target_accept=config.target_accept,
             )
-            if config.adapt_step_size else None
+            if config.adapt_step_size
+            else None
         )
 
         # Diagnostic counters
@@ -187,7 +195,7 @@ class NoUTurnSampler(MCMCKernel):
         theta: Array,
         p: Array,
         log_u: float,
-        direction: int,          # +1 forward, -1 backward
+        direction: int,  # +1 forward, -1 backward
         depth: int,
         step_size: float,
         H0: float,
@@ -201,7 +209,8 @@ class NoUTurnSampler(MCMCKernel):
             # ---------- Base case: one leapfrog step ----------
             try:
                 theta_new, p_new = leapfrog(
-                    theta, p,
+                    theta,
+                    p,
                     direction * step_size,
                     1,
                     self.grad_potential_energy,
@@ -246,7 +255,7 @@ class NoUTurnSampler(MCMCKernel):
         r1 = self._build_tree(theta, p, log_u, direction, depth - 1, step_size, H0)
 
         if r1.divergent:
-            return r1          # Short-circuit: already diverged
+            return r1  # Short-circuit: already diverged
 
         # Grow in the same direction from the frontier endpoint
         if direction == -1:
@@ -255,8 +264,13 @@ class NoUTurnSampler(MCMCKernel):
             frontier_theta, frontier_p = r1.theta_plus, r1.p_plus
 
         r2 = self._build_tree(
-            frontier_theta, frontier_p,
-            log_u, direction, depth - 1, step_size, H0,
+            frontier_theta,
+            frontier_p,
+            log_u,
+            direction,
+            depth - 1,
+            step_size,
+            H0,
         )
 
         # Merge the two subtrees
@@ -281,7 +295,9 @@ class NoUTurnSampler(MCMCKernel):
             p_plus = r2.p_plus
 
         # U-turn check on the merged subtree
-        uturn = is_uturn(theta_minus, theta_plus, p_minus, p_plus, self.inverse_mass_matrix)
+        uturn = is_uturn(
+            theta_minus, theta_plus, p_minus, p_plus, self.inverse_mass_matrix
+        )
 
         return _LeafResult(
             theta_minus=theta_minus,
@@ -301,7 +317,8 @@ class NoUTurnSampler(MCMCKernel):
         # Select step size
         if self.adaptation is not None:
             eps = (
-                self.adaptation.current_step_size() if is_warmup
+                self.adaptation.current_step_size()
+                if is_warmup
                 else self.adaptation.final_step_size()
             )
         else:
@@ -326,7 +343,7 @@ class NoUTurnSampler(MCMCKernel):
         p_plus = p0.copy()
 
         theta_new = state.theta.copy()
-        n_valid = 1         # current state is always slice-valid
+        n_valid = 1  # current state is always slice-valid
 
         sum_accept = 0.0
         n_accept_total = 0
@@ -341,15 +358,25 @@ class NoUTurnSampler(MCMCKernel):
 
             if direction == -1:
                 result = self._build_tree(
-                    theta_minus, p_minus,
-                    log_u, direction, depth, eps, H0,
+                    theta_minus,
+                    p_minus,
+                    log_u,
+                    direction,
+                    depth,
+                    eps,
+                    H0,
                 )
                 theta_minus = result.theta_minus
                 p_minus = result.p_minus
             else:
                 result = self._build_tree(
-                    theta_plus, p_plus,
-                    log_u, direction, depth, eps, H0,
+                    theta_plus,
+                    p_plus,
+                    log_u,
+                    direction,
+                    depth,
+                    eps,
+                    H0,
                 )
                 theta_plus = result.theta_plus
                 p_plus = result.p_plus
@@ -366,7 +393,10 @@ class NoUTurnSampler(MCMCKernel):
 
             # Stop on divergence or global U-turn
             stop = result.divergent or is_uturn(
-                theta_minus, theta_plus, p_minus, p_plus,
+                theta_minus,
+                theta_plus,
+                p_minus,
+                p_plus,
                 self.inverse_mass_matrix,
             )
 
@@ -397,6 +427,7 @@ class NoUTurnSampler(MCMCKernel):
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
 
 def nuts_kernel_factory(
     model: SpectralModel,

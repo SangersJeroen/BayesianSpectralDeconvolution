@@ -8,8 +8,8 @@ Implements:
 """
 
 import numpy as np
-from dataclasses import dataclass, field
-from typing import Callable, Optional
+from dataclasses import dataclass
+from typing import Callable
 
 Array = np.ndarray
 
@@ -18,13 +18,14 @@ Array = np.ndarray
 # Dual averaging — step-size adaptation
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class DualAveragingState:
-    log_step_size: float        # current (noisy) log ε_t
-    log_step_size_bar: float    # smoothed log ε̄_t  (frozen after warmup)
-    H_bar: float                # averaged error (target_accept - actual_accept)
+    log_step_size: float  # current (noisy) log ε_t
+    log_step_size_bar: float  # smoothed log ε̄_t  (frozen after warmup)
+    H_bar: float  # averaged error (target_accept - actual_accept)
     iteration: int
-    mu: float                   # μ = log(10 * ε_0)
+    mu: float  # μ = log(10 * ε_0)
 
 
 class StepSizeAdaptation:
@@ -110,6 +111,7 @@ class StepSizeAdaptation:
 # Initial step-size heuristic
 # ---------------------------------------------------------------------------
 
+
 def find_reasonable_step_size(
     potential_fn: Callable[[Array], float],
     grad_potential_fn: Callable[[Array], Array],
@@ -136,10 +138,15 @@ def find_reasonable_step_size(
 
     # One leapfrog step
     from .hmc import leapfrog
+
     try:
         theta1, momentum1 = leapfrog(
-            theta, momentum, eps, 1, grad_potential_fn,
-            1.0 / sample_momentum_fn().__class__  # placeholder — handled below
+            theta,
+            momentum,
+            eps,
+            1,
+            grad_potential_fn,
+            1.0 / sample_momentum_fn().__class__,  # placeholder — handled below
         )
     except Exception:
         return initial_step_size
@@ -160,9 +167,11 @@ def find_reasonable_step_size(
     direction = 1 if alpha > 0.5 else -1
 
     for _ in range(max_doublings):
-        eps *= (2.0 ** direction)
+        eps *= 2.0**direction
         try:
-            theta1, momentum1 = leapfrog(theta, momentum, eps, 1, grad_potential_fn, inv_M)
+            theta1, momentum1 = leapfrog(
+                theta, momentum, eps, 1, grad_potential_fn, inv_M
+            )
             U1 = potential_fn(theta1)
             K1 = kinetic_energy_fn(momentum1)
             dH = (U1 + K1) - (U0 + K0)
@@ -183,6 +192,7 @@ def find_reasonable_step_size(
 # ---------------------------------------------------------------------------
 # Online Welford covariance estimator — mass matrix adaptation
 # ---------------------------------------------------------------------------
+
 
 class WelfordCovariance:
     """
@@ -206,7 +216,7 @@ class WelfordCovariance:
         self.n = 0
         self.mean = np.zeros(ndim)
         if diagonal:
-            self.M2 = np.zeros(ndim)   # sum of squared deviations
+            self.M2 = np.zeros(ndim)  # sum of squared deviations
         else:
             self.M2 = np.zeros((ndim, ndim))
 
@@ -254,6 +264,6 @@ class WelfordCovariance:
         diagonal metrics: p ~ N(0, M) where M = 1/var elementwise.
         """
         if self.diagonal:
-            return self.get_variance()   # used as mass (not inverse mass)
+            return self.get_variance()  # used as mass (not inverse mass)
         else:
             return self.get_covariance()
