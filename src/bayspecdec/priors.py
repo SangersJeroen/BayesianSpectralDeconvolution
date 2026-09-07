@@ -68,9 +68,9 @@ class IndependentProductPrior:
         self, rng: np.random.Generator, parameterization: Parameterization
     ) -> Array:
         K = parameterization.K
-        a = self.amplitudes.sample(rng, size=K)
-        mu = self.centers.sample(rng, size=K)
-        b = self.bandwidths.sample(rng, size=K)
+        a = self.amplitudes.sample(rng, K)
+        mu = self.centers.sample(rng, K)
+        b = self.bandwidths.sample(rng, K)
         return parameterization.pack((a, mu, b))
 
     def log_prob(self, theta: Array, parameterization: Parameterization) -> float:

@@ -14,6 +14,7 @@ from .priors import (
 from .likelihoods import GaussianNoise, PoissonNoise
 from .models import SpectralModel
 from .samplers.metropolis import RandomWalkMetropolis, metropolis_kernel_factory
+from .samplers.hmc import HamiltonianMonteCarlo, HMCConfig, hmc_kernel_factory
 from .tempering import ParallelTempering, ExchangeResult
 from .evidence import EvidenceEstimate, estimate_evidence
 from .model_selection import ModelRun, select_model_size
@@ -33,6 +34,9 @@ __all__ = [
     "SpectralModel",
     "RandomWalkMetropolis",
     "metropolis_kernel_factory",
+    "HamiltonianMonteCarlo",
+    "HMCConfig",
+    "hmc_kernel_factory",
     "ParallelTempering",
     "ExchangeResult",
     "EvidenceEstimate",
