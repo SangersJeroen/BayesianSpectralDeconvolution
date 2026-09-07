@@ -104,11 +104,11 @@ class ParallelTempering:
         exchange_attempts = np.zeros(self.L - 1, dtype=int)
         exchange_accepts = np.zeros(self.L - 1, dtype=int)
 
-        def one_step(step_number: int):
+        def one_step(step_number: int, is_warmup: bool):
             for l_index, _ in enumerate(self.samplers):
                 before_attempts = states[l_index].attempted
                 before_accepts = states[l_index].accepted
-                self.samplers[l_index].step(states[l_index])
+                self.samplers[l_index].step(states[l_index], is_warmup=is_warmup)
                 within_attempts[l_index] += states[l_index].attempted - before_attempts
                 within_accepts[l_index] += states[l_index].accepted - before_accepts
 
@@ -120,7 +120,7 @@ class ParallelTempering:
                         exchange_accepts[l_index] += 1
 
         for step in tqdm.tqdm(range(1, burn_in + 1)):
-            one_step(step)
+            one_step(step, is_warmup=True)
 
         samples_by_temperature: list[list[Array]] = [[] for _ in range(self.L)]
         energy_trace_by_temperature: list[list[float]] = [[] for _ in range(self.L)]
@@ -130,7 +130,7 @@ class ParallelTempering:
         raw_state_trace: list[Array] = []
 
         for step in tqdm.tqdm(range(1, samples + 1)):
-            one_step(burn_in + step)
+            one_step(burn_in + step, is_warmup=False)
             if step % record_every == 0:
                 if store_state_trace:
                     raw_state_trace.append(np.stack([s.theta.copy() for s in states]))

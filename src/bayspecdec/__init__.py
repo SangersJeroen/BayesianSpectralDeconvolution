@@ -15,6 +15,8 @@ from .likelihoods import GaussianNoise, PoissonNoise
 from .models import SpectralModel
 from .samplers.metropolis import RandomWalkMetropolis, metropolis_kernel_factory
 from .samplers.hmc import HamiltonianMonteCarlo, HMCConfig, hmc_kernel_factory
+from .samplers.nuts import NoUTurnSampler, NUTSConfig, nuts_kernel_factory
+from .samplers.adaptation import StepSizeAdaptation, WelfordCovariance
 from .tempering import ParallelTempering, ExchangeResult
 from .evidence import EvidenceEstimate, estimate_evidence
 from .model_selection import ModelRun, select_model_size
@@ -37,6 +39,11 @@ __all__ = [
     "HamiltonianMonteCarlo",
     "HMCConfig",
     "hmc_kernel_factory",
+    "NoUTurnSampler",
+    "NUTSConfig",
+    "nuts_kernel_factory",
+    "StepSizeAdaptation",
+    "WelfordCovariance",
     "ParallelTempering",
     "ExchangeResult",
     "EvidenceEstimate",

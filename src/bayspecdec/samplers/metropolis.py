@@ -20,7 +20,8 @@ class MetropolisState:
 
 
 class MCMCKernel(Protocol):
-    def step(self, state: MetropolisState) -> MetropolisState: ...
+    def step(self, state: MetropolisState, is_warmup: bool = False) -> MetropolisState:
+        ...
 
 
 class RandomWalkMetropolis:
@@ -46,7 +47,7 @@ class RandomWalkMetropolis:
             proposal_scales = np.tile(proposal_scales, reps=ndim)
         self.proposal_scales = np.asarray(proposal_scales, dtype=float)
 
-    def step(self, state: MetropolisState) -> MetropolisState:
+    def step(self, state: MetropolisState, is_warmup: bool = False) -> MetropolisState:
         proposal = state.theta + self.rng.normal(0.0, self.proposal_scales)
         proposal_log_target = self.model.log_tempered_target(proposal, self.beta)
 
