@@ -31,46 +31,102 @@ def estimate_evidence(
     result: ExchangeResult,
 ) -> EvidenceEstimate:
     """
-    Estimate log Z(1) using Eq. (10).
+    Estimate log Z(1) using the paper's temperature-ratio approach.
+
+    General formulation:
+
+        Z(beta) = integral p(y | theta)^beta p(theta) dtheta
+
+    and
+
+        Z(beta_{l+1}) / Z(beta_l)
+          = E_{q_beta_l}
+              [ exp(delta_beta * log p(y | theta)) ]
+
+    Therefore:
+
+        log Z(1)
+          = sum_l logmeanexp(
+                delta_beta * log_likelihood_samples_l
+            )
+
+    This formulation is independent of the observation model.
     """
-    n: int | float = model.n
 
-    # Needs sigma2 for the paper formula
-    if hasattr(model.likelihood, "sigma2"):
-        sigma2: int | float = model.likelihood.sigma2
-        log_ratios = []
-        ratio_se = []
-
-        for l_index in range(result.beta.size - 1):
-            delta_beta = result.beta[l_index + 1] - result.beta[l_index]
-            energies = result.energy_trace_by_temperature[l_index]
-            if energies.size == 0:
-                raise ValueError("No samples available for evidence estimation")
-
-            log_weights = -(n / sigma2) * delta_beta * energies
-            log_ratio = logmeanexp(log_weights)
-            log_ratios.append(log_ratio)
-
-            # Standard error estimation
-            weights = np.exp(log_weights - np.max(log_weights))
-            weights *= np.exp(np.max(log_weights))
-            ratio = np.mean(weights)
-            if energies.size > 1:
-                se = np.std(weights, ddof=1) / np.sqrt(energies.size)
-            else:
-                se = np.nan
-            ratio_se.append(se / max(ratio, 1e-300))
-
-        log_ratios = np.asarray(log_ratios)
-        return EvidenceEstimate(
-            log_z=float(np.sum(log_ratios)),
-            log_ratios=log_ratios,
-            ratio_standard_errors=np.asarray(ratio_se),
+    if result.beta.size < 2:
+        raise ValueError(
+            "At least two beta values are required for evidence estimation."
         )
-    else:
-        # Generic case: uses full log_likelihood differences
-        # But wait, we'd need log_likelihood evaluated for all samples.
-        # For now, just raise an error or assume we only use models with energies/sigma2.
-        raise NotImplementedError(
-            "Evidence estimation currently requires a likelihood with sigma2 and energies."
+
+    if len(result.log_likelihood_trace_by_temperature) != result.beta.size:
+        raise ValueError(
+            "Number of likelihood traces must match number of beta values."
         )
+
+    log_ratios = []
+    ratio_standard_errors = []
+
+    for l_index in range(result.beta.size - 1):
+        delta_beta = result.beta[l_index + 1] - result.beta[l_index]
+
+        log_likelihoods = np.asarray(
+            result.log_likelihood_trace_by_temperature[l_index],
+            dtype=float,
+        )
+
+        # Each Monte Carlo sample contributes:
+        #
+        #   exp(delta_beta * log L(theta))
+        #
+        # Compute in log space to avoid numerical underflow/overflow.
+        log_weights = delta_beta * log_likelihoods
+
+        # log E[w]
+        log_ratio = logmeanexp(log_weights)
+        log_ratios.append(log_ratio)
+
+        # ------------------------------------------------------------
+        # Estimate the relative standard error of the ratio.
+        #
+        # For iid samples:
+        #
+        #   Var(mean(w)) = Var(w) / M
+        #
+        # We calculate this in log space as much as possible.
+        # ------------------------------------------------------------
+
+        m = log_weights.size
+
+        if m <= 1:
+            ratio_standard_errors.append(np.nan)
+            continue
+
+        log_mean_w = logmeanexp(log_weights)
+
+        # log(sum(w^2) / M)
+        log_mean_w2 = logmeanexp(2.0 * log_weights)
+
+        # Var(w) / mean(w)^2
+        #
+        # exp(log_mean_w2 - 2 log_mean_w) - 1
+        log_cv2 = log_mean_w2 - 2.0 * log_mean_w
+
+        # Numerical roundoff can make this very slightly negative.
+        cv2 = max(np.expm1(log_cv2), 0.0)
+
+        # Relative standard error of the sample mean:
+        #
+        #   SE(mean(w)) / mean(w)
+        #       = sqrt(CV^2 / M)
+        relative_se = np.sqrt(cv2 / m)
+
+        ratio_standard_errors.append(relative_se)
+
+    log_ratios = np.asarray(log_ratios)
+    ratio_standard_errors = np.asarray(ratio_standard_errors)
+
+    return EvidenceEstimate(
+        log_z=float(np.sum(log_ratios)),
+        log_ratios=log_ratios,
+        ratio_standard_errors=ratio_standard_errors,
+    )

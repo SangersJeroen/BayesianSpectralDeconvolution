@@ -1,14 +1,12 @@
+import numba
+from numba.experimental.jitclass.decorators import jitclass
 import numpy as np
 from typing import Protocol, runtime_checkable
 from .parameters import Parameterization
 
-from scipy.special import gamma
+import math
 
 Array = np.ndarray
-
-
-def lgamma(zs: Array | int | float) -> Array:
-    return np.log(np.abs(gamma(zs)))
 
 
 @runtime_checkable
@@ -20,30 +18,32 @@ class Prior(Protocol):
     def log_prob(self, theta: Array, parameterization: Parameterization) -> float: ...
 
 
+@jitclass([("shape", numba.float64), ("rate", numba.float64)])
 class GammaPrior:
     def __init__(self, shape: float, rate: float):
         self.shape = float(shape)
         self.rate = float(rate)
 
-    def sample(self, rng: np.random.Generator, size=None) -> Array:
+    def sample(self, rng: np.random.Generator, size: int = 1):
         return rng.gamma(shape=self.shape, scale=1.0 / self.rate, size=size)
 
     def log_prob(self, x: Array) -> Array:
         out = (
             self.shape * np.log(self.rate)
-            - lgamma(self.shape)
+            - math.lgamma(self.shape)
             + (self.shape - 1.0) * np.log(x)
             - self.rate * x
         )
         return np.where(x <= 0, -np.inf, out)
 
 
+@jitclass([("mean", numba.float64), ("precision", numba.float64)])
 class NormalPrior:
     def __init__(self, mean: float, precision: float):
         self.mean = float(mean)
         self.precision = float(precision)
 
-    def sample(self, rng: np.random.Generator, size=None) -> Array:
+    def sample(self, rng: np.random.Generator, size: int = 1):
         return rng.normal(loc=self.mean, scale=1.0 / np.sqrt(self.precision), size=size)
 
     def log_prob(self, x: Array) -> Array:

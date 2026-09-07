@@ -13,6 +13,7 @@ class ExchangeResult:
     beta: Array
     samples_by_temperature: list[Array]
     energy_trace_by_temperature: list[Array]
+    log_likelihood_trace_by_temperature: list[Array]
     within_acceptance: Array
     exchange_acceptance: Array
     all_states_trace: Optional[Array] = None
@@ -40,7 +41,13 @@ class ParallelTempering:
             theta = self.model.prior.sample(self.rng, self.model.parameterization)
             log_target = self.model.log_tempered_target(theta, b)
             energy = self.model.energy(theta)
-            states.append(MetropolisState(theta, log_target, energy))
+            states.append(
+                MetropolisState(
+                    theta=theta,
+                    log_target=log_target,
+                    energy=energy,
+                )
+            )
         return states
 
     def _attempt_swap(self, states: list[MetropolisState], l_index: int) -> bool:
@@ -115,9 +122,12 @@ class ParallelTempering:
         for step in tqdm.tqdm(range(1, burn_in + 1)):
             one_step(step)
 
-        samples_by_temperature = [[] for _ in range(self.L)]
-        energy_trace_by_temperature = [[] for _ in range(self.L)]
-        raw_state_trace = []
+        samples_by_temperature: list[list[Array]] = [[] for _ in range(self.L)]
+        energy_trace_by_temperature: list[list[float]] = [[] for _ in range(self.L)]
+        log_likelihood_trace_by_temperature: list[list[float]] = [
+            [] for _ in range(self.L)
+        ]
+        raw_state_trace: list[Array] = []
 
         for step in tqdm.tqdm(range(1, samples + 1)):
             one_step(burn_in + step)
@@ -127,12 +137,18 @@ class ParallelTempering:
                 for l_index, state in enumerate(states):
                     samples_by_temperature[l_index].append(state.theta.copy())
                     energy_trace_by_temperature[l_index].append(state.energy)
+                    log_likelihood_trace_by_temperature[l_index].append(
+                        self.model.log_likelihood(state.theta)
+                    )
 
         return ExchangeResult(
             beta=self.beta.copy(),
             samples_by_temperature=[np.asarray(s) for s in samples_by_temperature],
             energy_trace_by_temperature=[
                 np.asarray(s) for s in energy_trace_by_temperature
+            ],
+            log_likelihood_trace_by_temperature=[
+                np.asarray(s) for s in log_likelihood_trace_by_temperature
             ],
             within_acceptance=within_accepts / np.maximum(within_attempts, 1),
             exchange_acceptance=exchange_accepts / np.maximum(exchange_attempts, 1),
