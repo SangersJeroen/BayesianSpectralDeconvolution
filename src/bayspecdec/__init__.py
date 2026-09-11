@@ -8,6 +8,7 @@ from .parameters import DefaultParameterization
 from .priors import (
     GammaPrior,
     NormalPrior,
+    UniformPrior,
     IndependentProductPrior,
     paper_synthetic_prior,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "DefaultParameterization",
     "GammaPrior",
     "NormalPrior",
+    "UniformPrior",
     "IndependentProductPrior",
     "paper_synthetic_prior",
     "GaussianNoise",

@@ -74,6 +74,16 @@ def estimate_evidence(
             dtype=float,
         )
 
+        if not np.all(np.isfinite(log_likelihoods)):
+            print(
+                "RuntimeWarning:\n",
+                f"Infinite log-likelihood values found for beta index {l_index}.",
+            )
+            log_likelihoods = log_likelihoods[np.isfinite(log_likelihoods)]
+
+        if log_likelihoods.size == 0:
+            raise ValueError(f"No samples available for beta index {l_index}.")
+
         # Each Monte Carlo sample contributes:
         #
         #   exp(delta_beta * log L(theta))

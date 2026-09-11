@@ -52,6 +52,20 @@ class NormalPrior:
             - 0.5 * self.precision * (x - self.mean) ** 2
         )
 
+@jitclass([
+    ('lower', numba.float64), ('upper', numba.float64)
+    ])
+class UniformPrior:
+    def __init__(self, lower: float, upper: float):
+        self.lower = float(lower)
+        self.upper = float(upper)
+
+    def sample(self, rng: np.random.Generator, size: int = 1):
+        return rng.uniform(low=self.lower, high=self.upper, size=size)
+
+    def log_prob(self, x: Array) -> Array:
+        return np.log(1/(self.upper - self.lower))
+
 
 class IndependentProductPrior:
     """
