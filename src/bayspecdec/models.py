@@ -64,22 +64,11 @@ class SpectralModel:
         Paper: - (n/sigma^2) * beta * E(theta) + log prior
         """
         lp = self.log_prior(theta)
-        if not np.isfinite(lp):
-            return -np.inf
+        ll_part = self.log_likelihood(theta)
 
-        # To strictly match the paper's q_beta(theta) which omits the Gaussian normalizer
-        # We calculate: -(n / sigma2) * beta * E(theta)
-        # Note: self.likelihood is expected to have a sigma2 attribute for GaussianNoise,
-        # but in a truly generic setup we might just say:
-        # beta * log_likelihood, unless we want to avoid the log_likelihood normalization constant.
-        # The paper explicitly states -(n / sigma2) * beta * E(theta).
-        # We can reconstruct it if likelihood has sigma2:
-        if hasattr(self.likelihood, "sigma2"):
-            sigma2 = self.likelihood.sigma2
-            ll_part = -(self.n / sigma2) * self.energy(theta)
-        else:
-            # Fallback for arbitrary likelihood: use fully normalized log_prob
-            # But wait, tempering usually tempers the whole likelihood.
-            ll_part = self.log_likelihood(theta)
+        if not np.isfinite(lp):
+            raise FloatingPointError("log prior not finite")
+        if not np.isfinite(ll_part):
+            raise FloatingPointError("log likelihood not finite")
 
         return beta * ll_part + lp

@@ -96,6 +96,7 @@ class StepSizeAdaptation:
         )
 
         s.iteration += 1
+        print(f'step: {float(np.exp(s.log_step_size)):.2e}')
         return float(np.exp(s.log_step_size))
 
     def current_step_size(self) -> float:

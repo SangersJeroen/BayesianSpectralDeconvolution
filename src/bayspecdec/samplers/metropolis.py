@@ -1,6 +1,6 @@
 import numpy as np
 from dataclasses import dataclass
-from typing import Optional, Protocol
+from typing import Optional, Protocol, Callable
 from ..models import SpectralModel
 
 Array = np.ndarray
@@ -42,14 +42,17 @@ class RandomWalkMetropolis:
         self.rng = rng
         ndim: int = model.parameterization.ndim
         if proposal_scales is None:
-            K = model.parameterization.K
-            proposal_scales = np.concatenate([np.full(K, 0.5)] * ndim)
-        else:
-            proposal_scales = np.tile(proposal_scales, reps=ndim)
+            proposal_scales = np.full(ndim, 0.5)
         self.proposal_scales = np.asarray(proposal_scales, dtype=float)
 
     def step(self, state: MetropolisState, is_warmup: bool = False) -> MetropolisState:
-        proposal = state.theta + self.rng.normal(0.0, self.proposal_scales)
+        to_z: Callable[Array, Array] = self.model.parameterization.to_z
+        from_z: Callable[Array, Array] = self.model.parameterization.from_z
+        update: Array = self.rng.normal(0.0, self.proposal_scales)
+        old_theta = state.theta.copy()
+        proposal = from_z(
+            to_z(old_theta) + update
+        )
         proposal_log_target = self.model.log_tempered_target(proposal, self.beta)
 
         log_alpha = proposal_log_target - state.log_target
