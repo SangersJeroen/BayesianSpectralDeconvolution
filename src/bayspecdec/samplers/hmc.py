@@ -252,7 +252,6 @@ class HamiltonianMonteCarlo(MCMCKernel):
 
         # 3. Metropolis correction
         delta_H = H1 - H0
-        print(f'{abs(delta_H):.2e}')
         if not np.isfinite(delta_H) or abs(delta_H) > self.config.max_energy_error:
             divergent = True
             alpha = 0.0
