@@ -41,7 +41,6 @@ class RandomWalkMetropolis:
         self.model = model
         self.beta = float(beta)
         self.rng = rng
-        self.use_log_jacobian = use_log_jacobian
         self.proposal_scales = np.asarray(proposal_scales, dtype=float)
 
     def _to_z(self, theta: Array) -> Array:
@@ -79,24 +78,14 @@ class RandomWalkMetropolis:
         return 0.0
 
     def step(self, state: MetropolisState, is_warmup: bool = False) -> MetropolisState:
-        old_theta = state.theta.copy()
-        old_z = self._to_z(old_theta)
-        update: Array = self.rng.normal(0.0, self.proposal_scales)
-        new_z = old_z + update
-        proposal = self._from_z(new_z)
-
-        try:
-            proposal_log_target = self.model.log_tempered_target(proposal, self.beta)
-            valid = np.isfinite(proposal_log_target)
-        except (FloatingPointError, OverflowError, ValueError):
-            valid = False
-            proposal_log_target = -np.inf
-
-        if not valid:
-            accept = False
-        else:
-            log_jac_old = self._log_jacobian(old_theta, old_z)
-            log_jac_prop = self._log_jacobian(proposal, new_z)
+        to_z, from_z = (
+            self.model.parameterization.to_z,
+            self.model.parameterization.from_z,
+        )
+        proposal = from_z(
+            to_z(state.theta) + self.rng.normal(0.0, self.proposal_scales)
+        )
+        proposal_log_target = self.model.log_tempered_target(proposal, self.beta)
 
             log_alpha = (proposal_log_target - state.log_target) + (
                 log_jac_prop - log_jac_old

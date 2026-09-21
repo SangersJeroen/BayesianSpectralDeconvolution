@@ -56,22 +56,12 @@ class ParallelTempering:
         beta1 = self.beta[l_index]
         beta2 = self.beta[l_index + 1]
 
-        E1 = s1.energy
-        E2 = s2.energy
-        n = self.model.n
-
-        # We need sigma2 for paper's exact swap logic:
-        # log_v = (n / sigma2) * (beta2 - beta1) * (E2 - E1)
-        if hasattr(self.model.likelihood, "sigma2"):
-            sigma2 = self.model.likelihood.sigma2
-            log_v = (n / sigma2) * (beta2 - beta1) * (E2 - E1)
-        else:
-            # Fallback if no sigma2: the exchange log_v is generally:
-            # log_target(theta2, beta1) + log_target(theta1, beta2) - log_target(theta1, beta1) - log_target(theta2, beta2)
-            # which simplifies to (beta2 - beta1) * (log_likelihood(theta1) - log_likelihood(theta2))
-            ll1 = self.model.log_likelihood(s1.theta)
-            ll2 = self.model.log_likelihood(s2.theta)
-            log_v = (beta2 - beta1) * (ll1 - ll2)
+        # Fallback if no sigma2: the exchange log_v is generally:
+        # log_target(theta2, beta1) + log_target(theta1, beta2) - log_target(theta1, beta1) - log_target(theta2, beta2)
+        # which simplifies to (beta2 - beta1) * (log_likelihood(theta1) - log_likelihood(theta2))
+        ll1 = self.model.log_likelihood(s1.theta)
+        ll2 = self.model.log_likelihood(s2.theta)
+        log_v = (beta2 - beta1) * (ll1 - ll2)
 
         accept = np.log(self.rng.random()) < min(0.0, float(log_v))
 

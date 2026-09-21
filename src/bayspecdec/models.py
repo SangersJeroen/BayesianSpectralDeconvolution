@@ -65,7 +65,7 @@ class SpectralModel:
         """
         lp = self.log_prior(theta)
         ll_part = self.log_likelihood(theta)
-
+        
         if not np.isfinite(lp):
             raise FloatingPointError("log prior not finite")
         if not np.isfinite(ll_part):
