@@ -64,9 +64,11 @@ class SpectralModel:
         Paper: - (n/sigma^2) * beta * E(theta) + log prior
         """
         lp = self.log_prior(theta)
-        if not np.isfinite(lp):
-            return -np.inf
-
         ll_part = self.log_likelihood(theta)
+        
+        if not np.isfinite(lp):
+            raise FloatingPointError("log prior not finite")
+        if not np.isfinite(ll_part):
+            raise FloatingPointError("log likelihood not finite")
 
         return beta * ll_part + lp

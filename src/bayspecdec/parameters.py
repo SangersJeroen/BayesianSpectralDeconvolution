@@ -16,6 +16,7 @@ class Parameterization(Protocol):
     def from_z(self, z: Array) -> Array: ...
 
 
+
 class DefaultParameterization:
     """
     Standard parameterization from the paper.
@@ -41,3 +42,12 @@ class DefaultParameterization:
     def validate(self, theta: Array) -> None:
         if theta.size != self.ndim:
             raise ValueError(f"Expected {self.ndim} parameters, got {theta.size}")
+
+    def to_z(self, theta: Array) -> Array:
+        return np.asarray(theta, dtype=float).copy()
+
+    def from_z(self, z: Array) -> Array:
+        return np.asarray(z, dtype=float).copy()
+
+    def log_jacobian(self, theta: Array) -> float:
+        return 0.0

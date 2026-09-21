@@ -2,3 +2,4 @@
 **/__pycache__/*
 **/__pycache__/**
 .ruff_cache/*
+/src/bayspecdec/spectrum_gen.py
