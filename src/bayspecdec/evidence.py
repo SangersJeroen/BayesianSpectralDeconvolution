@@ -79,7 +79,14 @@ def estimate_evidence(
                 "RuntimeWarning:\n",
                 f"Infinite log-likelihood values found for beta index {l_index}.",
             )
+            count_inf: int = np.isinf(log_likelihoods).sum()
             log_likelihoods = log_likelihoods[np.isfinite(log_likelihoods)]
+            log_likelihoods = np.pad(
+                log_likelihoods,
+                pad_width=(0, count_inf),
+                mode="constant",
+                constant_values=[np.mean(log_likelihoods)],
+            )
 
         if log_likelihoods.size == 0:
             raise ValueError(f"No samples available for beta index {l_index}.")
