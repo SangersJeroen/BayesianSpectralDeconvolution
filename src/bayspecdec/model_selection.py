@@ -35,6 +35,8 @@ def select_model_size(
     burn_in: int = 2_000,
     samples: int = 2_000,
     seed: int = 1234,
+    swap_every: int = 1,
+    store_state_trace: bool = False
 ) -> list[ModelRun]:
     """Run parallel tempering independently for each candidate K and estimate evidence."""
     runs = []
@@ -50,9 +52,9 @@ def select_model_size(
         result = sampler.run(
             burn_in=burn_in,
             samples=samples,
-            swap_every=1,
+            swap_every=swap_every,
             record_every=1,
-            store_state_trace=False,
+            store_state_trace=store_state_trace,
         )
 
         evidence = estimate_evidence(model, result)

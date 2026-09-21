@@ -40,16 +40,16 @@ class RandomWalkMetropolis:
         self.model = model
         self.beta = float(beta)
         self.rng = rng
-        ndim: int = model.parameterization.ndim
-        if proposal_scales is None:
-            K = model.parameterization.K
-            proposal_scales = np.concatenate([np.full(K, 0.5)] * ndim)
-        else:
-            proposal_scales = np.tile(proposal_scales, reps=ndim)
         self.proposal_scales = np.asarray(proposal_scales, dtype=float)
 
     def step(self, state: MetropolisState, is_warmup: bool = False) -> MetropolisState:
-        proposal = state.theta + self.rng.normal(0.0, self.proposal_scales)
+        to_z, from_z = (
+            self.model.parameterization.to_z,
+            self.model.parameterization.from_z,
+        )
+        proposal = from_z(
+            to_z(state.theta) + self.rng.normal(0.0, self.proposal_scales)
+        )
         proposal_log_target = self.model.log_tempered_target(proposal, self.beta)
 
         log_alpha = proposal_log_target - state.log_target
