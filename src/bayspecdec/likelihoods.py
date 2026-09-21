@@ -75,21 +75,15 @@ class PoissonNoise:
         y = np.asarray(y)
         prediction = np.asarray(prediction)
 
-        # TODO: Fix prior transform to HMC phase space such that `a` can not be negative
-        if np.any(y <= 0):
-            raise ValueError(
-                "Poisson observations must be non-negative."
-            )
-
-        if np.any(prediction <= 0):
-            raise ValueError(
-                "Poisson predictions must be non-negative."
-                )
+        # if np.any(y <= 0) or np.any(prediction <= 0):
+        #     raise ValueError(
+        #         "Poisson observations and predictions must be non-negative."
+        #     )
 
         if not np.all(np.equal(y, np.floor(y))):
             raise ValueError("Poisson observations must be integers.")
 
-        log_likelihood = np.sum(y * np.log(prediction + 1) - prediction - gammaln(y + 1.0))
+        log_likelihood = np.sum(y * np.log(prediction) - prediction - gammaln(y + 1.0))
 
         return float(log_likelihood)
 

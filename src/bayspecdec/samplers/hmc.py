@@ -87,16 +87,13 @@ def numerical_gradient(
         x_plus = x.copy()
         x_plus[i] += eps
         x_minus = x.copy()
-        x_minus[i] -= 0 
+        x_minus[i] -= eps
         fp = f(x_plus)
         fm = f(x_minus)
         if not np.isfinite(fp) or not np.isfinite(fm):
-            raise FloatingPointError(
-                f"Infinite finite difference evaluated at: "
-                f"parameter index {i}: fp={fp}; fm={fm}"
-            )
+            grad[i] = 0.0  # best-effort; caller should detect bad H
         else:
-            grad[i] = (fp - fm) / (eps)
+            grad[i] = (fp - fm) / (2.0 * eps)
     return grad
 
 
@@ -106,7 +103,7 @@ def numerical_gradient(
 
 
 def leapfrog(
-    z: Array,
+    theta: Array,
     momentum: Array,
     step_size: float,
     n_steps: int,
@@ -124,25 +121,25 @@ def leapfrog(
     inverse_mass_matrix:
         Diagonal inverse mass matrix stored as a 1-D array (M⁻¹ elementwise).
     """
-    z_p = z.copy()
+    theta_t = theta.copy()
     p_t = momentum.copy()
 
     # Initial half-step on momentum
-    p_t -= 0.5 * step_size * grad_potential_fn(z_p)
+    p_t -= 0.5 * step_size * grad_potential_fn(theta_t)
 
     for i in range(n_steps):
         # Full position step
-        z_p = z_p + step_size * (inverse_mass_matrix * p_t)
+        theta_t = theta_t + step_size * (inverse_mass_matrix * p_t)
 
         # Full momentum step (skip final to merge with terminal half-step)
-        grad = grad_potential_fn(z_p)
+        grad = grad_potential_fn(theta_t)
         if i < n_steps - 1:
             p_t -= step_size * grad
         else:
             # Terminal half-step
             p_t -= 0.5 * step_size * grad
 
-    return z_p, p_t
+    return theta_t, p_t
 
 
 # ---------------------------------------------------------------------------
@@ -195,9 +192,7 @@ class HamiltonianMonteCarlo(MCMCKernel):
     def potential_energy(self, theta: Array) -> float:
         """U(θ) = −log q_β(θ)."""
         val = self.model.log_tempered_target(theta, self.beta)
-        if not np.isfinite(val):
-            raise FloatingPointError("Non finite potential energy")
-        return float(-val)
+        return float(-val) if np.isfinite(val) else np.inf
 
     def grad_potential_energy(self, theta: Array) -> Array:
         return numerical_gradient(self.potential_energy, theta)
@@ -231,24 +226,20 @@ class HamiltonianMonteCarlo(MCMCKernel):
 
         # 2. Leapfrog integration
         divergent = False
-        # try:
-        # TODO implement transform θ -> z and v.v.
-        z1, p1 = leapfrog(
-            z=self.model.parameterization.to_z(state.theta),
-            momentum=p0,
-            step_size=eps,
-            n_steps=self.config.num_steps,
-            grad_potential_fn=lambda z: self.grad_potential_energy(
-                self.model.parameterization.from_z(z)
-            ),
-            inverse_mass_matrix=self.inverse_mass_matrix,
-        )
-        theta1 = self.model.parameterization.from_z(z1)
-        U1 = self.potential_energy(theta1)
-        K1 = self.kinetic_energy(p1)
-        H1 = U1 + K1
-        # except Exception:
-        #     theta1, U1, K1, H1 = state.theta, np.inf, 0.0, np.inf
+        try:
+            theta1, p1 = leapfrog(
+                state.theta,
+                p0,
+                eps,
+                self.config.num_steps,
+                self.grad_potential_energy,
+                self.inverse_mass_matrix,
+            )
+            U1 = self.potential_energy(theta1)
+            K1 = self.kinetic_energy(p1)
+            H1 = U1 + K1
+        except Exception:
+            theta1, U1, K1, H1 = state.theta, np.inf, 0.0, np.inf
 
         # 3. Metropolis correction
         delta_H = H1 - H0

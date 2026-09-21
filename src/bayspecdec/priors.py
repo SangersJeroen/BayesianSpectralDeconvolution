@@ -34,7 +34,7 @@ class GammaPrior:
             + (self.shape - 1.0) * np.log(x)
             - self.rate * x
         )
-        return out
+        return np.where(x <= 0, -np.inf, out)
 
 
 @jitclass([("mean", numba.float64), ("precision", numba.float64)])
