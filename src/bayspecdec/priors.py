@@ -39,22 +39,21 @@ class GammaPrior:
 
 @jitclass([("mean", numba.float64), ("precision", numba.float64)])
 class NormalPrior:
-    def __init__(self, mean: float, precision: float):
+    def __init__(self, mean: float, std: float):
         self.mean = float(mean)
-        self.precision = float(precision)
+        self.std = float(std)
 
     def sample(self, rng: np.random.Generator, size: int = 1):
-        return rng.normal(loc=self.mean, scale=1.0 / np.sqrt(self.precision), size=size)
+        return rng.normal(loc=self.mean, scale=self.std, size=size)
 
     def log_prob(self, x: Array) -> Array:
         return (
-            0.5 * np.log(self.precision / (2.0 * np.pi))
-            - 0.5 * self.precision * (x - self.mean) ** 2
+            0.5 * np.log(self.std / (2.0 * np.pi))
+            - 0.5 * self.std * (x - self.mean) ** 2
         )
 
-@jitclass([
-    ('lower', numba.float64), ('upper', numba.float64)
-    ])
+
+@jitclass([("lower", numba.float64), ("upper", numba.float64)])
 class UniformPrior:
     def __init__(self, lower: float, upper: float):
         self.lower = float(lower)
@@ -64,7 +63,7 @@ class UniformPrior:
         return rng.uniform(low=self.lower, high=self.upper, size=size)
 
     def log_prob(self, x: Array) -> Array:
-        return np.log(1/(self.upper - self.lower))
+        return np.log(1 / (self.upper - self.lower))
 
 
 class IndependentProductPrior:
@@ -101,6 +100,6 @@ def paper_synthetic_prior() -> Prior:
     """Returns the synthetic prior from the original paper (Section 3.1)."""
     return IndependentProductPrior(
         amplitudes=GammaPrior(shape=5.0, rate=5.0),
-        centers=NormalPrior(mean=1.5, precision=5.0),
+        centers=NormalPrior(mean=1.5, std=5.0),
         bandwidths=GammaPrior(shape=5.0, rate=0.04),
     )
