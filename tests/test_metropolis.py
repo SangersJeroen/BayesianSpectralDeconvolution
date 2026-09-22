@@ -1,10 +1,15 @@
 import numpy as np
 import pytest
-from bayspecdec.samplers.metropolis import RandomWalkMetropolis, MetropolisState, metropolis_kernel_factory
+from bayspecdec.samplers.metropolis import (
+    RandomWalkMetropolis,
+    MetropolisState,
+    metropolis_kernel_factory,
+)
 
 
 class ExponentialParameterization:
     """1D positive parameter theta = exp(z)."""
+
     ndim = 1
     K = 1
 
@@ -32,7 +37,9 @@ class DummyExpModel:
     n = 1
 
     def __init__(self, param=None):
-        self.parameterization = param if param is not None else ExponentialParameterization()
+        self.parameterization = (
+            param if param is not None else ExponentialParameterization()
+        )
 
     def log_tempered_target(self, theta, beta):
         # Target: p(theta) = exp(-theta) for theta > 0
@@ -49,7 +56,9 @@ def test_metropolis_uses_log_jacobian():
     param = ExponentialParameterization()
     model = DummyExpModel(param=param)
     rng = np.random.default_rng(42)
-    sampler = RandomWalkMetropolis(model, beta=1.0, rng=rng, proposal_scales=np.array([0.1]))
+    sampler = RandomWalkMetropolis(
+        model, beta=1.0, rng=rng, proposal_scales=np.array([0.1])
+    )
 
     state = MetropolisState(theta=np.array([1.0]), log_target=-1.0, energy=0.0)
     new_state = sampler.step(state)
@@ -63,7 +72,11 @@ def test_metropolis_disable_log_jacobian():
     model = DummyExpModel(param=param)
     rng = np.random.default_rng(42)
     sampler = RandomWalkMetropolis(
-        model, beta=1.0, rng=rng, proposal_scales=np.array([0.1]), use_log_jacobian=False
+        model,
+        beta=1.0,
+        rng=rng,
+        proposal_scales=np.array([0.1]),
+        use_log_jacobian=False,
     )
 
     state = MetropolisState(theta=np.array([1.0]), log_target=-1.0, energy=0.0)

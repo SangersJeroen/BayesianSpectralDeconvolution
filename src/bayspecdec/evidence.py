@@ -141,10 +141,7 @@ def estimate_evidence(
 
         log_mean = logmeanexp(log_weights)
 
-        log_ess = (
-            2 * logsumexp(log_weights)
-            - logsumexp(2 * log_weights)
-        )
+        log_ess = 2 * logsumexp(log_weights) - logsumexp(2 * log_weights)
 
         ess = np.exp(log_ess)
 

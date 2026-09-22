@@ -36,7 +36,7 @@ def select_model_size(
     samples: int = 2_000,
     seed: int = 1234,
     swap_every: int = 1,
-    store_state_trace: bool = False
+    store_state_trace: bool = False,
 ) -> list[ModelRun]:
     """Run parallel tempering independently for each candidate K and estimate evidence."""
     runs = []
