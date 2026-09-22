@@ -74,18 +74,16 @@ def estimate_evidence(
             dtype=float,
         )
 
-        if not np.all(np.isfinite(log_likelihoods)):
+        if np.any(np.isposinf(log_likelihoods)):
             print(
                 "RuntimeWarning:\n",
-                f"Infinite log-likelihood values found for beta index {l_index}.",
+                f" Positive infinite log-likelihood values found for beta index {l_index}.",
             )
-            count_inf: int = np.isinf(log_likelihoods).sum()
-            log_likelihoods = log_likelihoods[np.isfinite(log_likelihoods)]
-            log_likelihoods = np.pad(
-                log_likelihoods,
-                pad_width=(0, count_inf),
-                mode="constant",
-                constant_values=[np.mean(log_likelihoods)],
+
+        if np.any(np.isnan(log_likelihoods)):
+            print(
+                "RuntimeWarning:\n",
+                f" nan values found for beta index {l_index}.",
             )
 
         if log_likelihoods.size == 0:
@@ -138,6 +136,25 @@ def estimate_evidence(
         relative_se = np.sqrt(cv2 / m)
 
         ratio_standard_errors.append(relative_se)
+
+        log_weights = delta_beta * log_likelihoods
+
+        log_mean = logmeanexp(log_weights)
+
+        log_ess = (
+            2 * logsumexp(log_weights)
+            - logsumexp(2 * log_weights)
+        )
+
+        ess = np.exp(log_ess)
+
+        print(
+            f"{l_index:2d} "
+            f"beta={result.beta[l_index]:.4f}->{result.beta[l_index+1]:.4f} "
+            f"Δβ={delta_beta:.4f} "
+            f"log-ratio={log_mean:.4f} "
+            f"weight-ESS={ess:.1f}/{len(log_weights)}"
+        )
 
     log_ratios = np.asarray(log_ratios)
     ratio_standard_errors = np.asarray(ratio_standard_errors)

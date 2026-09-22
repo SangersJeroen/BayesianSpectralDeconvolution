@@ -1,6 +1,7 @@
 import numpy as np
 from typing import Protocol, runtime_checkable, Optional
 from scipy.special import gammaln
+from typing import Optional
 
 Array = np.ndarray
 
@@ -24,24 +25,20 @@ class GaussianNoise:
     def __init__(self, sigma2: float):
         self.sigma2: float = float(sigma2)
 
+    @property
+    def pref(self) -> float:
+        return 1 / np.sqrt(2 * np.pi * self.sigma2)
+
     def log_prob(
         self, y: Array, prediction: Array, context: Optional[dict] = None
     ) -> float:
         """Fully normalized log-likelihood."""
-        n = y.size
-        # log N(y; f(x), sigma2*I) = -n/2 log(2*pi*sigma2) - 1/(2*sigma2) sum (y - f(x))^2
-        residual = y - prediction
-        return -0.5 * n * np.log(2.0 * np.pi * self.sigma2) - (
-            0.5 / self.sigma2
-        ) * np.sum(residual**2)
+        residual: Array = y - prediction
+        lprob: float = np.log(self.pref) * (-1 / (2 * self.sigma2) * residual**2).sum()
+        return lprob
 
     def energy(self, y: Array, prediction: Array) -> float:
-        """Paper's E(theta): 1/(2n) * sum squared residuals."""
-        # residual = y - prediction
-        # return float(0.5 * np.mean(residual**2))
-        return -self.log_prob(y, prediction) / y.size
-
-    from typing import Optional
+        return -self.log_prob(y, prediction)
 
 
 class PoissonNoise:
