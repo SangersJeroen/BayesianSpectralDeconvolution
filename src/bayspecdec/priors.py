@@ -63,7 +63,7 @@ class UniformPrior:
         return rng.uniform(low=self.lower, high=self.upper, size=size)
 
     def log_prob(self, x: Array) -> Array:
-        return np.log(1 / (self.upper - self.lower))
+        return np.broadcast_to(np.log(1 / abs(self.upper - self.lower)), shape=x.shape)
 
 
 class IndependentProductPrior:

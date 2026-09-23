@@ -29,6 +29,7 @@ class EvidenceEstimate:
 def estimate_evidence(
     model: SpectralModel,
     result: ExchangeResult,
+    verbose: bool = False
 ) -> EvidenceEstimate:
     """
     Estimate log Z(1) using the paper's temperature-ratio approach.
@@ -145,19 +146,23 @@ def estimate_evidence(
 
         ess = np.exp(log_ess)
 
-        print(
-            f"{l_index:2d} "
-            f"beta={result.beta[l_index]:.4f}->{result.beta[l_index+1]:.4f} "
-            f"Δβ={delta_beta:.4f} "
-            f"log-ratio={log_mean:.4f} "
-            f"weight-ESS={ess:.1f}/{len(log_weights)}"
-        )
+        if verbose:
+            print(
+                f"{l_index:2d} "
+                f"beta={result.beta[l_index]:.4f}->{result.beta[l_index+1]:.4f} "
+                f"Δβ={delta_beta:.4f} "
+                f"log-ratio={log_mean:.4f} "
+                f"weight-ESS={ess:.1f}/{len(log_weights)}"
+            )
 
     log_ratios = np.asarray(log_ratios)
     ratio_standard_errors = np.asarray(ratio_standard_errors)
+    log_z = float(np.sum(log_ratios))
+    if verbose:
+        print(f'Calculated log(Z)={log_z:.2f}')
 
     return EvidenceEstimate(
-        log_z=float(np.sum(log_ratios)),
+        log_z=log_z,
         log_ratios=log_ratios,
         ratio_standard_errors=ratio_standard_errors,
     )
