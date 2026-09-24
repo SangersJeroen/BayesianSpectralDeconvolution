@@ -72,12 +72,12 @@ class PoissonNoise:
         y = np.asarray(y)
         prediction = np.asarray(prediction)
 
-        # if np.any(y <= 0) or np.any(prediction <= 0):
-        #     raise ValueError(
-        #         "Poisson observations and predictions must be non-negative."
-        #     )
+        if np.any(y <= 0) or np.any(prediction <= 0):
+            raise ValueError(
+                "Poisson observations and predictions must be non-negative."
+            )
 
-        if not np.all(np.equal(y, np.floor(y))):
+        if not isinstance(y.dtype, np.int_):
             raise ValueError("Poisson observations must be integers.")
 
         log_likelihood = np.sum(y * np.log(prediction) - prediction - gammaln(y + 1.0))
