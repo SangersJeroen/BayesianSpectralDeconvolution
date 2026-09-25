@@ -12,7 +12,7 @@ from .priors import (
     IndependentProductPrior,
     paper_synthetic_prior,
 )
-from .likelihoods import GaussianNoise, PoissonNoise
+from .likelihoods import GaussianNoise, PoissonNoise, PoissonGaussianNoise
 from .models import SpectralModel
 from .samplers.metropolis import RandomWalkMetropolis, metropolis_kernel_factory
 from .samplers.hmc import HamiltonianMonteCarlo, HMCConfig, hmc_kernel_factory
@@ -35,6 +35,7 @@ __all__ = [
     "paper_synthetic_prior",
     "GaussianNoise",
     "PoissonNoise",
+    "PoissonGaussianNoise",
     "SpectralModel",
     "RandomWalkMetropolis",
     "metropolis_kernel_factory",
