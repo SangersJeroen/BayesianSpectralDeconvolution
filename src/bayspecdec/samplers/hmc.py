@@ -86,14 +86,15 @@ def numerical_gradient(
     for i in range(x.size):
         x_plus = x.copy()
         x_plus[i] += eps
-        x_minus = x.copy()
-        x_minus[i] -= eps
+        # x_minus = x.copy()
+        # x_minus[i] -= eps
         fp = f(x_plus)
-        fm = f(x_minus)
-        if not np.isfinite(fp) or not np.isfinite(fm):
+        # fm = f(x_minus)
+        fx = f(x)
+        if not np.isfinite(fp) or not np.isfinite(fx):
             grad[i] = 0.0  # best-effort; caller should detect bad H
         else:
-            grad[i] = (fp - fm) / (2.0 * eps)
+            grad[i] = (fp - fx) / (1.0 * eps)
     return grad
 
 
@@ -109,6 +110,7 @@ def leapfrog(
     n_steps: int,
     grad_potential_fn: Callable[[Array], Array],
     inverse_mass_matrix: Array,
+    transforms: tuple[Callable[[Array], Array], Callable[[Array], Array]]
 ) -> tuple[Array, Array]:
     """
     Velocity-Verlet (leapfrog) integrator.
@@ -121,6 +123,7 @@ def leapfrog(
     inverse_mass_matrix:
         Diagonal inverse mass matrix stored as a 1-D array (M⁻¹ elementwise).
     """
+    (to_z, from_z) = transforms
     theta_t = theta.copy()
     p_t = momentum.copy()
 
@@ -129,7 +132,7 @@ def leapfrog(
 
     for i in range(n_steps):
         # Full position step
-        theta_t = theta_t + step_size * (inverse_mass_matrix * p_t)
+        theta_t = from_z(to_z(theta_t) + step_size * (inverse_mass_matrix * p_t))
 
         # Full momentum step (skip final to merge with terminal half-step)
         grad = grad_potential_fn(theta_t)
@@ -226,6 +229,10 @@ class HamiltonianMonteCarlo(MCMCKernel):
 
         # 2. Leapfrog integration
         divergent = False
+        transforms = (
+            self.model.parameterization.to_z,
+            self.model.parameterization.from_z,
+        )
         try:
             theta1, p1 = leapfrog(
                 state.theta,
@@ -234,11 +241,12 @@ class HamiltonianMonteCarlo(MCMCKernel):
                 self.config.num_steps,
                 self.grad_potential_energy,
                 self.inverse_mass_matrix,
+                transforms=transforms,
             )
             U1 = self.potential_energy(theta1)
             K1 = self.kinetic_energy(p1)
             H1 = U1 + K1
-        except Exception:
+        except ValueError:
             theta1, U1, K1, H1 = state.theta, np.inf, 0.0, np.inf
 
         # 3. Metropolis correction
