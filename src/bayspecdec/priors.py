@@ -25,7 +25,7 @@ class GammaPrior:
         self.rate = float(rate)
 
     def sample(self, rng: np.random.Generator, size: int = 1):
-        return rng.gamma(shape=self.shape, scale=1.0 / self.rate, size=size)
+        return rng.gamma(shape=self.shape, scale=self.rate, size=size)
 
     def log_prob(self, x: Array) -> Array:
         out = (
