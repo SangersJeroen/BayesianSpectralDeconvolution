@@ -32,7 +32,7 @@ class GammaPrior:
             self.shape * np.log(self.rate)
             - math.lgamma(self.shape)
             + (self.shape - 1.0) * np.log(x)
-            - self.rate * x
+            - x / self.rate
         )
         return np.where(x <= 0, -np.inf, out)
 
