@@ -7,9 +7,13 @@ whole run compiles to a single XLA program.
 
 Replica exchange uses the usual odd/even sweep. Pairs inside a sweep do not
 overlap, so all swap decisions are made at once and applied as one permutation of
-the chain states. Step-size adaptation (dual averaging) is per chain, because each
-temperature has its own optimal step size; a swap moves ``theta`` but never the
-adaptation state.
+the chain states.
+
+Adaptation is per chain, because each temperature has its own optimal step size and
+scale: dual averaging for the step size and, optionally, a Stan-style windowed
+estimate of a diagonal inverse mass matrix. A swap moves ``z`` between chains but
+never the adaptation state; this is valid because the states held by chain ``l`` are
+(marginally) draws from ``q_{beta_l}``, which is what its metric should describe.
 """
 
 from __future__ import annotations
@@ -41,6 +45,15 @@ class PTConfig:
         HMC iterations between replica-exchange sweeps.
     max_energy_error:
         ``|dH|`` above this is a divergence and is rejected.
+    adapt_mass:
+        Estimate a diagonal inverse mass matrix (the posterior variance of ``z``) per
+        temperature during warmup, in slow windows that double in length (Stan's scheme).
+        The step size is re-tuned after every window. Needs ``burn_in >= 20``;
+        shorter warmups fall back to the initial ``inverse_mass``.
+    init_buffer, term_buffer, base_window:
+        Warmup layout for mass adaptation: fast step-size-only iterations at the start,
+        slow windows starting at ``base_window`` and doubling, fast iterations at the end.
+        Scaled down to 15% / 10% / the rest when ``burn_in`` is too short for the defaults.
     """
 
     num_leapfrog: int = 10
@@ -48,6 +61,10 @@ class PTConfig:
     target_accept: float = 0.8
     swap_every: int = 10
     max_energy_error: float = 1000.0
+    adapt_mass: bool = True
+    init_buffer: int = 75
+    term_buffer: int = 50
+    base_window: int = 25
     da_gamma: float = 0.05
     da_t0: float = 10.0
     da_kappa: float = 0.75
@@ -61,6 +78,35 @@ class PTConfig:
             raise ValueError("target_accept must be in (0, 1)")
         if self.swap_every < 1:
             raise ValueError("swap_every must be >= 1")
+
+
+def warmup_schedule(burn_in: int, cfg: PTConfig) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Per-iteration flags ``(accumulate, window_end)`` for mass-matrix adaptation.
+
+    ``accumulate[i]``: add the post-step state of iteration ``i`` to the running variance.
+    ``window_end[i]``: after iteration ``i``, convert the variance into the new metric and
+    restart step-size adaptation. Both are all-False when mass adaptation is off.
+    """
+    accumulate = np.zeros(burn_in, dtype=bool)
+    window_end = np.zeros(burn_in, dtype=bool)
+    if not cfg.adapt_mass or burn_in < 20:
+        return accumulate, window_end
+
+    init, term, base = cfg.init_buffer, cfg.term_buffer, cfg.base_window
+    if init + base + term > burn_in:
+        init, term = int(0.15 * burn_in), int(0.10 * burn_in)
+        base = burn_in - init - term
+
+    start, size = init, base
+    while start < burn_in - term:
+        end = start + size
+        if end + 2 * size > burn_in - term:  # absorb a too-short final window
+            end = burn_in - term
+        window_end[end - 1] = True
+        start, size = end, size * 2
+    accumulate[init : burn_in - term] = True
+    return accumulate, window_end
 
 
 class JaxParallelTempering:
@@ -79,6 +125,7 @@ class JaxParallelTempering:
             raise ValueError("Need at least two temperatures")
         self.L = int(self.betas.size)
         self.config = config or PTConfig()
+        # Initial diagonal M^-1, shared by all chains; adapted per chain when adapt_mass.
         self.inverse_mass = (
             jnp.ones(model.ndim)
             if inverse_mass is None
@@ -101,13 +148,12 @@ class JaxParallelTempering:
 
     # -- one HMC transition for one chain ---------------------------------------
 
-    def _hmc_step(self, key, z, ll, lp, beta, eps):
+    def _hmc_step(self, key, z, ll, lp, beta, eps, inv_m):
         cfg = self.config
-        inv_m = self.inverse_mass
         vg = jax.value_and_grad(self._potential, has_aux=True)
 
         k_mom, k_acc = jax.random.split(key)
-        p0 = jax.random.normal(k_mom, z.shape) / jnp.sqrt(inv_m)
+        p0 = jax.random.normal(k_mom, z.shape) / jnp.sqrt(inv_m)  # p ~ N(0, M)
         U0 = -(beta * ll + lp)
         H0 = U0 + 0.5 * jnp.sum(inv_m * p0**2)
 
@@ -154,7 +200,17 @@ class JaxParallelTempering:
         perm = perm.at[jnp.where(accept, idx + 1, L)].set(idx, mode="drop")
         return z[perm], ll[perm], lp[perm], active, accept
 
-    # -- dual averaging (vectorised over chains) ------------------------------------
+    # -- adaptation (vectorised over chains) ------------------------------------------
+
+    def _da_init(self, log_eps: Array):
+        """Fresh dual-averaging state centred on ``log_eps`` (shape ``(L,)``)."""
+        return (
+            log_eps,
+            log_eps,
+            jnp.zeros(self.L),
+            jnp.asarray(1.0),
+            jnp.log(10.0) + log_eps,
+        )
 
     def _da_update(self, da, alpha):
         cfg = self.config
@@ -166,19 +222,54 @@ class JaxParallelTempering:
         log_eps_bar = eta_bar * log_eps + (1.0 - eta_bar) * log_eps_bar
         return (log_eps, log_eps_bar, h_bar, t + 1.0, mu)
 
+    def _welford_init(self):
+        d = self.model.ndim
+        return (jnp.asarray(0.0), jnp.zeros((self.L, d)), jnp.zeros((self.L, d)))
+
+    @staticmethod
+    def _welford_update(w, z, take):
+        n, mean, m2 = w
+        n_new = n + 1.0
+        delta = z - mean
+        mean_new = mean + delta / n_new
+        m2_new = m2 + delta * (z - mean_new)
+        return (
+            jnp.where(take, n_new, n),
+            jnp.where(take, mean_new, mean),
+            jnp.where(take, m2_new, m2),
+        )
+
     # -- full run -------------------------------------------------------------------
 
-    def _iteration(self, carry, t, adapt: bool):
-        key, z, ll, lp, da, ex_att, ex_acc = carry
+    def _iteration(self, carry, xs, adapt: bool):
+        t, accumulate, window_end = xs
+        key, z, ll, lp, da, inv_m, welford, ex_att, ex_acc = carry
         key, k_hmc, k_swap = jax.random.split(key, 3)
 
         log_eps = da[0] if adapt else da[1]
         keys = jax.random.split(k_hmc, self.L)
         z, ll, lp, alpha, accepted = jax.vmap(self._hmc_step)(
-            keys, z, ll, lp, self.betas, jnp.exp(log_eps)
+            keys, z, ll, lp, self.betas, jnp.exp(log_eps), inv_m
         )
         if adapt:
             da = self._da_update(da, alpha)
+            welford = self._welford_update(welford, z, accumulate)
+
+            # End of a slow window: variance -> metric, restart step-size adaptation.
+            n, _, m2 = welford
+            var = m2 / jnp.maximum(n - 1.0, 1.0)
+            var = (n / (n + 5.0)) * var + 1e-3 * (5.0 / (n + 5.0))  # shrink, as Stan does
+            inv_m = jnp.where(window_end, var, inv_m)
+            da = jax.tree_util.tree_map(
+                lambda fresh, old: jnp.where(window_end, fresh, old),
+                self._da_init(da[1]),  # restart from the smoothed step size
+                da,
+            )
+            welford = jax.tree_util.tree_map(
+                lambda fresh, old: jnp.where(window_end, fresh, old),
+                self._welford_init(),
+                welford,
+            )
 
         swap_now = (t % self.config.swap_every) == 0
         parity = (t // self.config.swap_every) % 2
@@ -189,49 +280,56 @@ class JaxParallelTempering:
         ex_att = ex_att + swap_now * active
         ex_acc = ex_acc + swap_now * swapped
 
-        return (key, z, ll, lp, da, ex_att, ex_acc), (z, ll, accepted)
+        carry = (key, z, ll, lp, da, inv_m, welford, ex_att, ex_acc)
+        return carry, (z, ll, accepted)
 
-    def _run_impl(self, key, z0, burn_in: int, samples: int):
+    def _run_impl(self, key, z0, accumulate, window_end, burn_in: int, samples: int):
         L = self.L
         ll0, lp0 = jax.vmap(self._parts)(z0)
-        eps0 = self.config.init_step_size
-        da = (
-            jnp.full(L, jnp.log(eps0)),
-            jnp.full(L, jnp.log(eps0)),
-            jnp.zeros(L),
-            jnp.asarray(1.0),
-            jnp.full(L, jnp.log(10.0 * eps0)),
-        )
+        da = self._da_init(jnp.full(L, jnp.log(self.config.init_step_size)))
+        inv_m = jnp.broadcast_to(self.inverse_mass, (L, self.model.ndim))
         zeros = jnp.zeros(L - 1, dtype=int)
-        carry = (key, z0, ll0, lp0, da, zeros, zeros)
+        carry = (key, z0, ll0, lp0, da, inv_m, self._welford_init(), zeros, zeros)
 
-        carry, _ = jax.lax.scan(
-            partial(self._iteration, adapt=True), carry, jnp.arange(1, burn_in + 1)
-        )
+        warm_xs = (jnp.arange(1, burn_in + 1), accumulate, window_end)
+        carry, _ = jax.lax.scan(partial(self._iteration, adapt=True), carry, warm_xs)
+
         # Exchange statistics only count the sampling phase.
-        carry = carry[:5] + (zeros, zeros)
+        key, z, ll, lp, da, inv_m, welford, _, _ = carry
+        carry = (key, z, ll, lp, da, inv_m, welford, zeros, zeros)
+        no_flags = jnp.zeros(samples, dtype=bool)
+        samp_xs = (jnp.arange(burn_in + 1, burn_in + samples + 1), no_flags, no_flags)
         carry, (z_tr, ll_tr, acc_tr) = jax.lax.scan(
-            partial(self._iteration, adapt=False),
-            carry,
-            jnp.arange(burn_in + 1, burn_in + samples + 1),
+            partial(self._iteration, adapt=False), carry, samp_xs
         )
-        _, _, _, _, da, ex_att, ex_acc = carry
-        return z_tr, ll_tr, acc_tr, ex_att, ex_acc, jnp.exp(da[1])
+        _, _, _, _, da, inv_m, _, ex_att, ex_acc = carry
+        return z_tr, ll_tr, acc_tr, ex_att, ex_acc, jnp.exp(da[1]), inv_m
 
     def run(self, burn_in: int, samples: int, seed: int = 0) -> ExchangeResult:
-        """Warm up (adapting step sizes), then record ``samples`` iterations."""
+        """
+        Warm up (adapting step size and, if enabled, mass matrix), then record ``samples``
+        iterations. After the run, ``final_step_sizes`` and ``final_inverse_mass`` (z-space,
+        shapes ``(L,)`` and ``(L, d)``) hold the adapted tuning per temperature.
+        """
         key_init, key_run = jax.random.split(jax.random.PRNGKey(seed))
         theta0 = jax.vmap(self.model.sample_prior)(jax.random.split(key_init, self.L))
         z0 = jax.vmap(self.model.transform.to_z)(theta0)
+        accumulate, window_end = warmup_schedule(burn_in, self.config)
 
-        z_tr, ll_tr, acc_tr, ex_att, ex_acc, eps = self._run(
-            key_run, z0, burn_in=burn_in, samples=samples
+        z_tr, ll_tr, acc_tr, ex_att, ex_acc, eps, inv_m = self._run(
+            key_run,
+            z0,
+            jnp.asarray(accumulate),
+            jnp.asarray(window_end),
+            burn_in=burn_in,
+            samples=samples,
         )
         theta_tr = np.asarray(self._to_theta(z_tr))  # (samples, L, d)
         ll_tr = np.asarray(ll_tr)
         ex_att, ex_acc = np.asarray(ex_att), np.asarray(ex_acc)
 
         self.final_step_sizes = np.asarray(eps)
+        self.final_inverse_mass = np.asarray(inv_m)
         return ExchangeResult(
             beta=np.asarray(self.betas),
             samples_by_temperature=[theta_tr[:, l] for l in range(self.L)],

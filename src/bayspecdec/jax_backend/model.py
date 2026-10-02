@@ -20,6 +20,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .priors import as_prior
+
 jax.config.update("jax_enable_x64", True)
 
 Array = jax.Array
@@ -133,33 +135,33 @@ def make_spectral_model(
     y: np.ndarray,
     basis_fn: Callable[[Array, Array], Array],
     K: int,
-    amplitude_bounds: tuple[float, float],
-    basis_param_bounds: Sequence[tuple[float, float]],
+    amplitude_prior,
+    basis_priors: Sequence,
     sigma2: Optional[float] = None,
     likelihood: Optional[Callable[[Array, Array], Array]] = None,
 ) -> JaxModel:
     """
-    ``y ~ sum_k a_k * basis_fn(x, params)[k]`` with uniform priors on boxes.
+    ``y ~ sum_k a_k * basis_fn(x, params)[k]`` with independent priors per parameter block.
 
-    theta layout: ``[a_1..a_K, p1_1..p1_K, p2_1..p2_K, ...]`` with one block of
-    K values per entry of ``basis_param_bounds``. ``basis_fn`` receives the
-    parameter blocks stacked as ``(n_basis_params, K)`` and returns ``(K, n)``.
-    Pass either ``sigma2`` (Gaussian noise) or a custom ``likelihood(y, pred)``.
+    theta layout: ``[a_1..a_K, p1_1..p1_K, p2_1..p2_K, ...]``: one block of K values for the
+    amplitudes and one per entry of ``basis_priors``. Each block shares one prior, given as a
+    ``UniformPrior`` / ``GammaPrior`` (or any ``JaxPrior``) or a ``(lower, upper)`` tuple meaning
+    uniform. ``basis_fn`` receives the basis blocks stacked as ``(n_basis_params, K)`` and
+    returns ``(K, n)``. Pass either ``sigma2`` (Gaussian noise) or a custom ``likelihood(y, pred)``.
     """
     if (sigma2 is None) == (likelihood is None):
         raise ValueError("Pass exactly one of sigma2 or likelihood")
     if likelihood is None:
         likelihood = gaussian_log_likelihood(sigma2)
 
-    n_blocks = 1 + len(basis_param_bounds)
-    lower = np.repeat([amplitude_bounds[0]] + [b[0] for b in basis_param_bounds], K)
-    upper = np.repeat([amplitude_bounds[1]] + [b[1] for b in basis_param_bounds], K)
-    transform = BoxTransform(lower, upper)
+    priors = [as_prior(amplitude_prior)] + [as_prior(p) for p in basis_priors]
+    n_blocks = len(priors)
+    transform = BoxTransform(
+        np.repeat([p.lower for p in priors], K), np.repeat([p.upper for p in priors], K)
+    )
 
     xj = jnp.asarray(x, dtype=float)
     yj = jnp.asarray(y, dtype=float)
-    log_density = -float(np.sum(np.log(upper - lower)))
-    lower_j, upper_j = jnp.asarray(lower), jnp.asarray(upper)
 
     def predict(theta: Array) -> Array:
         blocks = theta.reshape(n_blocks, K)
@@ -169,11 +171,12 @@ def make_spectral_model(
         return likelihood(yj, predict(theta))
 
     def log_prior(theta: Array) -> Array:
-        inside = jnp.all((theta >= lower_j) & (theta <= upper_j))
-        return jnp.where(inside, log_density, -jnp.inf)
+        blocks = theta.reshape(n_blocks, K)
+        return sum(jnp.sum(p.log_prob(blocks[i])) for i, p in enumerate(priors))
 
     def sample_prior(key: Array) -> Array:
-        return jax.random.uniform(key, (n_blocks * K,), minval=lower_j, maxval=upper_j)
+        keys = jax.random.split(key, n_blocks)
+        return jnp.concatenate([p.sample(k, (K,)) for p, k in zip(priors, keys)])
 
     model = JaxModel(
         ndim=n_blocks * K,

@@ -12,12 +12,16 @@ from .model import (
     gaussian_log_likelihood,
     make_spectral_model,
 )
+from .priors import GammaPrior, JaxPrior, UniformPrior
 from .selection import JaxModelRun, select_model_size
 from .tempering import JaxParallelTempering, PTConfig
 
 __all__ = [
     "BoxTransform",
     "JaxModel",
+    "GammaPrior",
+    "JaxPrior",
+    "UniformPrior",
     "gaussian_log_likelihood",
     "make_spectral_model",
     "JaxModelRun",

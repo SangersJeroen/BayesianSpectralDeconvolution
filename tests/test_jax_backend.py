@@ -7,6 +7,8 @@ from scipy import stats  # noqa: E402
 
 from bayspecdec.jax_backend import (  # noqa: E402
     BoxTransform,
+    GammaPrior,
+    UniformPrior,
     JaxModel,
     JaxParallelTempering,
     PTConfig,
@@ -15,6 +17,7 @@ from bayspecdec.jax_backend import (  # noqa: E402
     select_model_size,
 )
 from bayspecdec.evidence import estimate_evidence  # noqa: E402
+from bayspecdec.jax_backend.tempering import warmup_schedule  # noqa: E402
 
 
 def lorentz_basis(x, params):
@@ -64,8 +67,8 @@ def test_gradient_matches_finite_differences(basis_fn):
     x = np.linspace(0, 12, 60)
     y = np.random.default_rng(1).normal(size=60) * 0.01
     model = make_spectral_model(
-        x, y, basis_fn, K=3, amplitude_bounds=(0.2, 1.2),
-        basis_param_bounds=[(1.0, 11.0)], sigma2=1e-4,
+        x, y, basis_fn, K=3, amplitude_prior=(0.2, 1.2),
+        basis_priors=[(1.0, 11.0)], sigma2=1e-4,
     )
     z = jnp.asarray(np.random.default_rng(2).normal(size=model.ndim))
 
@@ -144,8 +147,8 @@ def test_select_model_size_prefers_true_number_of_peaks():
 
     def factory(K):
         return make_spectral_model(
-            x, y, lorentz_basis, K, amplitude_bounds=(0.2, 2.5),
-            basis_param_bounds=[(1.0, 11.0)], sigma2=1e-4,
+            x, y, lorentz_basis, K, amplitude_prior=(0.2, 2.5),
+            basis_priors=[(1.0, 11.0)], sigma2=1e-4,
         )
 
     betas = np.concatenate([[0.0], 1.5 ** (np.arange(1, 30) - 29)])
@@ -154,3 +157,165 @@ def test_select_model_size_prefers_true_number_of_peaks():
         config=PTConfig(swap_every=5),
     )
     assert runs[1].evidence.log_z > runs[0].evidence.log_z
+
+
+# ---------------------------------------------------------------------------
+# Priors
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kwargs, ref", [
+    ({"rate": 2.0}, stats.gamma(a=3.0, scale=0.5)),
+    ({"scale": 0.04}, stats.gamma(a=3.0, scale=0.04)),
+])
+def test_gamma_prior_matches_scipy(kwargs, ref):
+    prior = GammaPrior(3.0, **kwargs)
+    x = np.array([0.01, 0.2, 1.0, 4.0])
+    np.testing.assert_allclose(prior.log_prob(jnp.asarray(x)), ref.logpdf(x), rtol=1e-10)
+    assert prior.log_prob(jnp.array([0.0, -1.0])).tolist() == [-np.inf, -np.inf]
+
+    draws = np.asarray(prior.sample(jax.random.PRNGKey(0), (200_000,)))
+    np.testing.assert_allclose(draws.mean(), ref.mean(), rtol=0.02)
+    np.testing.assert_allclose(draws.var(), ref.var(), rtol=0.05)
+
+
+def test_gamma_prior_gradient_is_finite_everywhere():
+    prior = GammaPrior(5.0, rate=5.0)
+    g = jax.grad(lambda x: jnp.sum(prior.log_prob(x)))(jnp.array([-1.0, 0.0, 0.5]))
+    assert np.all(np.isfinite(g))
+
+
+def test_prior_argument_validation():
+    with pytest.raises(ValueError):
+        GammaPrior(2.0)
+    with pytest.raises(ValueError):
+        GammaPrior(2.0, rate=1.0, scale=1.0)
+    with pytest.raises(ValueError):
+        GammaPrior(-1.0, rate=1.0)
+    with pytest.raises(ValueError):
+        UniformPrior(1.0, 1.0)
+
+
+def test_uniform_prior_density_and_support():
+    prior = UniformPrior(1.0, 5.0)
+    lp = prior.log_prob(jnp.array([0.9, 1.0, 3.0, 5.0, 5.1]))
+    np.testing.assert_allclose(lp, [-np.inf, np.log(0.25), np.log(0.25), np.log(0.25), -np.inf])
+    draws = np.asarray(prior.sample(jax.random.PRNGKey(1), (1000,)))
+    assert draws.min() >= 1.0 and draws.max() <= 5.0
+
+
+def test_spectral_model_with_mixed_priors():
+    x = np.linspace(0, 12, 40)
+    y = np.zeros(40)
+    model = make_spectral_model(
+        x, y, lorentz_basis, K=2,
+        amplitude_prior=GammaPrior(5.0, rate=5.0),
+        basis_priors=[UniformPrior(1.0, 11.0)],
+        sigma2=1e-2,
+    )
+    np.testing.assert_array_equal(model.transform.lower, [0, 0, 1, 1])
+    assert np.isinf(model.transform.upper[:2]).all() and (model.transform.upper[2:] == 11).all()
+
+    theta = model.sample_prior(jax.random.PRNGKey(0))
+    assert theta.shape == (4,) and jnp.all(theta[:2] > 0) and jnp.all((theta[2:] >= 1) & (theta[2:] <= 11))
+    assert np.isfinite(model.log_prior(theta))
+    # log density in theta space = Gamma terms + uniform terms
+    expected = GammaPrior(5.0, rate=5.0).log_prob(theta[:2]).sum() - 2 * np.log(10.0)
+    np.testing.assert_allclose(model.log_prior(theta), expected, rtol=1e-12)
+
+    z = model.transform.to_z(theta)
+    g = jax.grad(lambda z: model.log_likelihood(model.transform.to_theta(z))
+                 + model.log_prior(model.transform.to_theta(z))
+                 + model.transform.log_jac(z))(z)
+    assert np.all(np.isfinite(g))
+
+
+def test_pt_with_gamma_prior_recovers_analytic_evidence():
+    """Gamma(a, rate b) prior, L(theta) = exp(-c theta): Z = (b/(b+c))^a, posterior Gamma(a, b+c)."""
+    a, b, c, d = 3.0, 2.0, 4.0, 2
+    prior = GammaPrior(a, rate=b)
+    model = JaxModel(
+        ndim=d,
+        log_likelihood=lambda th: -c * jnp.sum(th),
+        log_prior=lambda th: jnp.sum(prior.log_prob(th)),
+        transform=BoxTransform(np.zeros(d), np.full(d, np.inf)),
+        sample_prior=lambda key: prior.sample(key, (d,)),
+    )
+    betas = np.concatenate([[0.0], 1.5 ** (np.arange(1, 20) - 19)])
+    pt = JaxParallelTempering(model, betas, PTConfig(swap_every=5))
+    result = pt.run(burn_in=500, samples=3000, seed=5)
+
+    assert abs(estimate_evidence(None, result).log_z - d * a * np.log(b / (b + c))) < 0.15
+    post = result.samples_by_temperature[-1]
+    np.testing.assert_allclose(post.mean(axis=0), a / (b + c), rtol=0.1)
+
+
+# ---------------------------------------------------------------------------
+# Mass-matrix adaptation
+# ---------------------------------------------------------------------------
+
+
+def test_warmup_schedule_layout():
+    cfg = PTConfig()
+    acc, end = warmup_schedule(800, cfg)
+    assert list(np.flatnonzero(end) + 1) == [100, 150, 250, 750]  # doubling, last absorbs the rest
+    assert acc[:75].sum() == 0 and acc[75:750].all() and acc[750:].sum() == 0
+
+    acc, end = warmup_schedule(100, cfg)  # too short for defaults: 15% / 10% split
+    assert end.sum() >= 1 and not acc[-10:].any() and not acc[:15].any()
+
+    assert not any(a.any() for a in warmup_schedule(10, cfg))
+    assert not any(a.any() for a in warmup_schedule(800, PTConfig(adapt_mass=False)))
+
+
+def _skewed_gauss_model(stds, half_width=50.0):
+    stds = np.asarray(stds)
+    d = stds.size
+    return JaxModel(
+        ndim=d,
+        log_likelihood=lambda th: jnp.sum(-0.5 * (th / stds) ** 2 - jnp.log(stds * jnp.sqrt(2 * jnp.pi))),
+        log_prior=lambda th: jnp.where(
+            jnp.all(jnp.abs(th) <= half_width), -d * jnp.log(2 * half_width), -jnp.inf
+        ),
+        transform=BoxTransform(np.full(d, -half_width), np.full(d, half_width)),
+        sample_prior=lambda key: jax.random.uniform(
+            key, (d,), minval=-half_width, maxval=half_width
+        ),
+    )
+
+
+def test_mass_adaptation_learns_scales_and_improves_mixing():
+    stds = np.array([0.05, 0.5, 5.0])  # two orders of magnitude apart
+    model = _skewed_gauss_model(stds)
+    betas = np.concatenate([[0.0], 1.5 ** (np.arange(1, 26) - 25)])
+
+    outcome = {}
+    for adapt in (False, True):
+        pt = JaxParallelTempering(model, betas, PTConfig(adapt_mass=adapt, swap_every=5))
+        res = pt.run(burn_in=800, samples=2000, seed=1)
+        x = res.samples_by_temperature[-1][:, 2]
+        x = x - x.mean()
+        outcome[adapt] = (pt, res, (x[1:] * x[:-1]).mean() / x.var())
+
+    pt0, _, ac0 = outcome[False]
+    pt1, res1, ac1 = outcome[True]
+
+    np.testing.assert_array_equal(pt0.final_inverse_mass[-1], 1.0)  # untouched when off
+    inv_m = pt1.final_inverse_mass[-1]
+    # theta std ratios 10 -> variance ratio ~100 (z ~ linear in theta near the centre)
+    assert 50 < inv_m[2] / inv_m[1] < 200
+    assert inv_m[1] > inv_m[0]
+
+    assert pt1.final_step_sizes[-1] > 10 * pt0.final_step_sizes[-1]
+    assert ac1 < ac0 - 0.5
+    np.testing.assert_allclose(res1.samples_by_temperature[-1].std(axis=0), stds, rtol=0.2)
+    assert abs(estimate_evidence(None, res1).log_z - (-3 * np.log(100.0))) < 0.4
+
+
+def test_user_supplied_initial_inverse_mass_is_used_when_adaptation_off():
+    model = _gauss_model(2)
+    pt = JaxParallelTempering(
+        model, np.array([0.0, 0.5, 1.0]), PTConfig(adapt_mass=False), inverse_mass=np.array([0.3, 2.0])
+    )
+    pt.run(burn_in=30, samples=10)
+    np.testing.assert_allclose(pt.final_inverse_mass, [[0.3, 2.0]] * 3)
