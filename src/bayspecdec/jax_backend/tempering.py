@@ -28,6 +28,7 @@ import numpy as np
 
 from ..tempering import ExchangeResult
 from .model import JaxModel
+from .nuts import nuts_transition
 
 Array = jax.Array
 
@@ -35,12 +36,20 @@ Array = jax.Array
 @dataclass(frozen=True)
 class PTConfig:
     """
+    kernel:
+        Within-temperature transition: ``"hmc"`` (fixed-length leapfrog), ``"nuts"`` (multinomial
+        No-U-Turn, trajectory length chosen adaptively) or ``"rwm"`` (Gaussian random walk,
+        scaled by the step size and the adapted metric). For ``"nuts"`` the reported within-chain
+        acceptance is the fraction of transitions that moved.
     num_leapfrog:
-        Leapfrog steps per transition (static: it fixes the scan length).
+        Leapfrog steps per transition (``"hmc"`` only; static: it fixes the scan length).
+    max_tree_depth:
+        ``"nuts"`` only: a trajectory has at most ``2**max_tree_depth`` leapfrog steps.
     init_step_size:
         Starting step size in z-space. Dual averaging tunes it per chain.
     target_accept:
-        Dual-averaging target for the mean Metropolis acceptance probability.
+        Dual-averaging target for the mean Metropolis acceptance probability. Defaults to
+        0.8 for ``"hmc"``/``"nuts"`` and 0.234 for ``"rwm"``.
     swap_every:
         HMC iterations between replica-exchange sweeps.
     max_energy_error:
@@ -56,9 +65,11 @@ class PTConfig:
         Scaled down to 15% / 10% / the rest when ``burn_in`` is too short for the defaults.
     """
 
+    kernel: str = "hmc"
     num_leapfrog: int = 10
+    max_tree_depth: int = 8
     init_step_size: float = 0.1
-    target_accept: float = 0.8
+    target_accept: Optional[float] = None
     swap_every: int = 10
     max_energy_error: float = 1000.0
     adapt_mass: bool = True
@@ -70,6 +81,12 @@ class PTConfig:
     da_kappa: float = 0.75
 
     def __post_init__(self):
+        if self.kernel not in ("hmc", "nuts", "rwm"):
+            raise ValueError("kernel must be 'hmc', 'nuts' or 'rwm'")
+        if self.target_accept is None:
+            object.__setattr__(self, "target_accept", 0.234 if self.kernel == "rwm" else 0.8)
+        if self.max_tree_depth < 1:
+            raise ValueError("max_tree_depth must be >= 1")
         if self.num_leapfrog < 1:
             raise ValueError("num_leapfrog must be >= 1")
         if self.init_step_size <= 0.0:
@@ -185,6 +202,29 @@ class JaxParallelTempering:
             accept,
         )
 
+    def _nuts_step(self, key, z, ll, lp, beta, eps, inv_m):
+        cfg = self.config
+        vg = jax.value_and_grad(self._potential, has_aux=True)
+        return nuts_transition(
+            vg, key, z, ll, lp, beta, eps, inv_m, cfg.max_tree_depth, cfg.max_energy_error
+        )
+
+    def _rwm_step(self, key, z, ll, lp, beta, eps, inv_m):
+        k_prop, k_acc = jax.random.split(key)
+        z1 = z + eps * jnp.sqrt(inv_m) * jax.random.normal(k_prop, z.shape)
+        ll1, lp1 = self._parts(z1)
+        log_alpha = beta * (ll1 - ll) + (lp1 - lp)
+        log_alpha = jnp.where(jnp.isnan(log_alpha), -jnp.inf, log_alpha)
+        alpha = jnp.exp(jnp.minimum(0.0, log_alpha))
+        accept = jnp.log(jax.random.uniform(k_acc)) < log_alpha
+        return (
+            jnp.where(accept, z1, z),
+            jnp.where(accept, ll1, ll),
+            jnp.where(accept, lp1, lp),
+            alpha,
+            accept,
+        )
+
     # -- replica exchange -------------------------------------------------------
 
     def _swap(self, key, z, ll, lp, parity):
@@ -248,7 +288,10 @@ class JaxParallelTempering:
 
         log_eps = da[0] if adapt else da[1]
         keys = jax.random.split(k_hmc, self.L)
-        z, ll, lp, alpha, accepted = jax.vmap(self._hmc_step)(
+        step = {"hmc": self._hmc_step, "nuts": self._nuts_step, "rwm": self._rwm_step}[
+            self.config.kernel
+        ]
+        z, ll, lp, alpha, accepted = jax.vmap(step)(
             keys, z, ll, lp, self.betas, jnp.exp(log_eps), inv_m
         )
         if adapt:

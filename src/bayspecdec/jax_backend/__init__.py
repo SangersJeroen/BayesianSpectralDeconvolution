@@ -9,10 +9,22 @@ Not imported by ``bayspecdec`` itself, so JAX stays an optional dependency::
 from .model import (
     BoxTransform,
     JaxModel,
-    gaussian_log_likelihood,
     make_spectral_model,
 )
-from .priors import GammaPrior, JaxPrior, UniformPrior
+from .basis import gaussian_basis, lorentzian_basis
+from .likelihoods import (
+    gaussian_log_likelihood,
+    poisson_gaussian_log_likelihood,
+    poisson_log_likelihood,
+)
+from .priors import (
+    GammaPrior,
+    JaxPrior,
+    NormalPrior,
+    UniformPrior,
+    FermiDiracPrior,
+    paper_synthetic_priors,
+)
 from .selection import JaxModelRun, select_model_size
 from .tempering import JaxParallelTempering, PTConfig
 
@@ -21,7 +33,14 @@ __all__ = [
     "JaxModel",
     "GammaPrior",
     "JaxPrior",
+    "NormalPrior",
     "UniformPrior",
+    "FermiDiracPrior",
+    "paper_synthetic_priors",
+    "gaussian_basis",
+    "lorentzian_basis",
+    "poisson_log_likelihood",
+    "poisson_gaussian_log_likelihood",
     "gaussian_log_likelihood",
     "make_spectral_model",
     "JaxModelRun",

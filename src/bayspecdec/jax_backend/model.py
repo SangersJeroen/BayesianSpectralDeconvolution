@@ -20,6 +20,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .likelihoods import gaussian_log_likelihood
 from .priors import as_prior
 
 jax.config.update("jax_enable_x64", True)
@@ -116,18 +117,6 @@ class JaxModel:
 # ---------------------------------------------------------------------------
 # Spectral-model convenience builder
 # ---------------------------------------------------------------------------
-
-
-def gaussian_log_likelihood(sigma2: float) -> Callable[[Array, Array], Array]:
-    """Fully normalised Gaussian log-likelihood ``(y, prediction) -> scalar``."""
-
-    def log_prob(y: Array, prediction: Array) -> Array:
-        residual = y - prediction
-        return -0.5 * residual.size * jnp.log(2.0 * jnp.pi * sigma2) - 0.5 * jnp.sum(
-            residual**2
-        ) / sigma2
-
-    return log_prob
 
 
 def make_spectral_model(
