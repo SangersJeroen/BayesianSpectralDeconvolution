@@ -8,6 +8,10 @@ import math
 
 Array = np.ndarray
 
+@numba.njit
+def _log_expm1(x):
+    # Stable log(exp(x) - 1) for x > 0
+    return np.where(x <= 1.0, np.log(np.expm1(x)), x + np.log1p(-np.exp(-x)))
 
 @runtime_checkable
 class Prior(Protocol):
@@ -25,7 +29,7 @@ class GammaPrior:
         self.rate = float(rate)
 
     def sample(self, rng: np.random.Generator, size: int = 1):
-        return rng.gamma(shape=self.shape, scale=self.rate, size=size)
+        return rng.gamma(shape=self.shape, scale=1/self.rate, size=size)
 
     def log_prob(self, x: Array) -> Array:
         out = (
@@ -65,6 +69,28 @@ class UniformPrior:
     def log_prob(self, x: Array) -> Array:
         return np.broadcast_to(np.log(1 / abs(self.upper - self.lower)), shape=x.shape)
 
+
+@jitclass([
+    ("mu", numba.float64),
+    ("temperature", numba.float64),   # this is kT, same units as mu
+    ("log_L", numba.float64),         # log of L = ln(1 + exp(mu/kT))
+])
+class FermiDiracPrior:
+    def __init__(self, mu: float, temperature: float):
+        self.mu = float(mu)
+        self.temperature = float(temperature)
+        # L = log1p(exp(mu/kT)) computed stably via logaddexp(0, mu/kT)
+        self.log_L = np.log(np.logaddexp(0.0, self.mu / self.temperature))
+
+    def sample(self, rng: np.random.Generator, size: int = 1):
+        L = np.exp(self.log_L)
+        u = 1.0 - rng.random(size)          # u in (0, 1]
+        return self.mu - self.temperature * _log_expm1(u * L)
+
+    def log_prob(self, x):
+        z = (x - self.mu) / self.temperature
+        out = -np.log(self.temperature) - np.exp(self.log_L) - np.logaddexp(0.0, z)
+        return np.where(x < 0, -np.inf, out)
 
 class IndependentProductPrior:
     """

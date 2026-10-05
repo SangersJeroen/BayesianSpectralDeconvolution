@@ -319,3 +319,173 @@ def test_user_supplied_initial_inverse_mass_is_used_when_adaptation_off():
     )
     pt.run(burn_in=30, samples=10)
     np.testing.assert_allclose(pt.final_inverse_mass, [[0.3, 2.0]] * 3)
+
+
+# -- likelihoods ---------------------------------------------------------------------------
+
+
+def test_poisson_log_likelihood_matches_scipy_and_has_finite_gradient():
+    from bayspecdec.jax_backend import poisson_log_likelihood
+
+    rng = np.random.default_rng(0)
+    lam = rng.uniform(0.5, 20.0, size=40)
+    y = rng.poisson(lam).astype(float)
+    ll = poisson_log_likelihood()
+    np.testing.assert_allclose(ll(jnp.asarray(y), jnp.asarray(lam)), stats.poisson.logpmf(y, lam).sum())
+    grad = jax.grad(lambda p: ll(jnp.asarray(y), p))(jnp.asarray(lam - 5.0))  # some lam < 0
+    assert np.all(np.isfinite(grad))
+
+
+@pytest.mark.parametrize("sigma2, lam_max", [(1e-4, 30.0), (0.5, 10.0), (4.0, 30.0)])
+def test_poisson_gaussian_matches_numpy_implementation(sigma2, lam_max):
+    from bayspecdec.jax_backend import poisson_gaussian_log_likelihood
+    from bayspecdec.likelihoods import PoissonGaussianNoise
+
+    rng = np.random.default_rng(1)
+    lam = np.concatenate([[0.0, 1e-3], rng.uniform(0.0, lam_max, size=30)])
+    y = rng.poisson(lam) + rng.normal(0.0, np.sqrt(sigma2), size=lam.size)
+    ours = poisson_gaussian_log_likelihood(sigma2, half_width=25)(jnp.asarray(y), jnp.asarray(lam))
+    ref = PoissonGaussianNoise(sigma2).log_prob(y, lam)
+    np.testing.assert_allclose(ours, ref, rtol=1e-8)
+
+
+def test_poisson_gaussian_gradient_matches_finite_differences():
+    from bayspecdec.jax_backend import poisson_gaussian_log_likelihood
+
+    rng = np.random.default_rng(2)
+    lam = jnp.asarray(rng.uniform(1.0, 8.0, size=10))
+    y = jnp.asarray(rng.poisson(np.asarray(lam)) + rng.normal(0, 0.3, size=10))
+    f = lambda p: poisson_gaussian_log_likelihood(0.09)(y, p)
+    g = jax.grad(f)(lam)
+    h = 1e-6
+    fd = np.array([(f(lam.at[i].add(h)) - f(lam.at[i].add(-h))) / (2 * h) for i in range(10)])
+    np.testing.assert_allclose(g, fd, rtol=1e-5, atol=1e-7)
+
+
+def test_poisson_gaussian_rejects_bad_arguments():
+    from bayspecdec.jax_backend import poisson_gaussian_log_likelihood
+
+    with pytest.raises(ValueError):
+        poisson_gaussian_log_likelihood(0.0)
+    with pytest.raises(ValueError):
+        poisson_gaussian_log_likelihood(1.0, half_width=0)
+
+
+# -- priors and basis ----------------------------------------------------------------------
+
+
+def test_normal_prior_matches_scipy_and_samples():
+    from bayspecdec.jax_backend import NormalPrior
+
+    p = NormalPrior(1.5, 5.0)
+    x = np.linspace(-10, 10, 21)
+    np.testing.assert_allclose(p.log_prob(jnp.asarray(x)), stats.norm.logpdf(x, 1.5, 5.0))
+    draws = np.asarray(p.sample(jax.random.PRNGKey(0), (20000,)))
+    assert abs(draws.mean() - 1.5) < 0.15 and abs(draws.std() - 5.0) < 0.15
+    with pytest.raises(ValueError):
+        NormalPrior(0.0, 0.0)
+
+
+def test_basis_functions_match_numpy_versions():
+    from bayspecdec.basis import GaussianBasis, LorentzianBasis
+    from bayspecdec.jax_backend import gaussian_basis, lorentzian_basis
+
+    x = np.linspace(0, 3, 31)
+    params = np.array([[1.0, 2.0], [50.0, 100.0]])
+    np.testing.assert_allclose(gaussian_basis(jnp.asarray(x), jnp.asarray(params)), GaussianBasis().evaluate(x, params))
+    np.testing.assert_allclose(lorentzian_basis(jnp.asarray(x), jnp.asarray(params)), LorentzianBasis().evaluate(x, params))
+
+
+def test_paper_synthetic_model_runs_with_normal_and_gamma_priors():
+    from bayspecdec.data import make_paper_like_synthetic_data
+    from bayspecdec.jax_backend import gaussian_basis, paper_synthetic_priors
+
+    x, y, _ = make_paper_like_synthetic_data()
+    amp, basis = paper_synthetic_priors()
+    model = make_spectral_model(x, y, gaussian_basis, 3, amp, basis, sigma2=0.01)
+    theta = model.sample_prior(jax.random.PRNGKey(0))
+    assert np.isfinite(model.log_likelihood(theta)) and np.isfinite(model.log_prior(theta))
+    z = model.transform.to_z(theta)
+    assert np.all(np.isfinite(jax.grad(lambda z: model.log_posterior(model.transform.to_theta(z)))(z)))
+
+
+# -- NUTS and random-walk kernels ------------------------------------------------------------
+
+_BETAS = np.concatenate([[0.0], 1.5 ** (np.arange(1, 24) - 23)])
+
+
+def test_nuts_recovers_analytic_evidence_and_posterior():
+    d = 3
+    pt = JaxParallelTempering(_gauss_model(d), _BETAS, PTConfig(kernel="nuts", swap_every=5))
+    result = pt.run(burn_in=500, samples=1500, seed=3)
+
+    assert abs(estimate_evidence(None, result).log_z - (-d * np.log(10.0))) < 0.3
+    post = result.samples_by_temperature[-1]
+    assert np.all(np.abs(post.mean(axis=0)) < 0.1)
+    np.testing.assert_allclose(post.std(axis=0), 0.5, atol=0.07)
+    assert np.all(result.exchange_acceptance > 0.05)
+
+
+def test_nuts_samples_correlated_gaussian_with_correct_covariance():
+    # Posterior N(0, S) with strong correlation; exercises the U-turn logic beyond a diagonal target.
+    S = np.array([[1.0, 0.9], [0.9, 1.0]])
+    P = jnp.asarray(np.linalg.inv(S))
+    model = JaxModel(
+        ndim=2,
+        log_likelihood=lambda th: -0.5 * th @ P @ th,
+        log_prior=lambda th: jnp.where(jnp.all(jnp.abs(th) <= 20.0), 0.0, -jnp.inf),
+        transform=BoxTransform(np.full(2, -20.0), np.full(2, 20.0)),
+        sample_prior=lambda key: jax.random.uniform(key, (2,), minval=-5.0, maxval=5.0),
+    )
+    pt = JaxParallelTempering(model, [0.5, 1.0], PTConfig(kernel="nuts", swap_every=5))
+    post = pt.run(burn_in=500, samples=3000, seed=0).samples_by_temperature[-1]
+    np.testing.assert_allclose(np.cov(post.T), S, atol=0.15)
+    np.testing.assert_allclose(post.mean(axis=0), 0.0, atol=0.15)
+
+
+def test_nuts_depth_is_bounded_and_runs_with_adaptation_off():
+    pt = JaxParallelTempering(
+        _gauss_model(2), _BETAS[-4:], PTConfig(kernel="nuts", max_tree_depth=2, adapt_mass=False)
+    )
+    result = pt.run(burn_in=50, samples=100, seed=1)
+    assert np.all(np.isfinite(result.log_likelihood_trace_by_temperature[-1]))
+
+
+def test_rwm_recovers_analytic_evidence_and_posterior():
+    d = 2
+    pt = JaxParallelTempering(_gauss_model(d), _BETAS, PTConfig(kernel="rwm", swap_every=2))
+    result = pt.run(burn_in=2000, samples=10000, seed=4)
+
+    assert abs(estimate_evidence(None, result).log_z - (-d * np.log(10.0))) < 0.4
+    post = result.samples_by_temperature[-1]
+    np.testing.assert_allclose(post.std(axis=0), 0.5, atol=0.1)
+    assert 0.1 < result.within_acceptance[-1] < 0.6  # dual averaging aims at 0.234
+
+
+def test_kernel_config_validation_and_defaults():
+    assert PTConfig().target_accept == 0.8
+    assert PTConfig(kernel="nuts").target_accept == 0.8
+    assert PTConfig(kernel="rwm").target_accept == 0.234
+    assert PTConfig(kernel="rwm", target_accept=0.3).target_accept == 0.3
+    with pytest.raises(ValueError):
+        PTConfig(kernel="gibbs")
+    with pytest.raises(ValueError):
+        PTConfig(kernel="nuts", max_tree_depth=0)
+    with pytest.raises(ValueError):
+        PTConfig(target_accept=1.5)
+
+
+def test_spectral_model_with_poisson_gaussian_likelihood_runs_under_nuts():
+    from bayspecdec.jax_backend import poisson_gaussian_log_likelihood
+
+    x = np.linspace(0, 6, 40)
+    truth = 10.0 * 0.5 / ((x - 3.0) ** 2 + 0.5)
+    rng = np.random.default_rng(0)
+    y = rng.poisson(truth) + rng.normal(0, 0.1, size=x.size)
+    model = make_spectral_model(
+        x, y, lorentz_basis, 1, (1.0, 30.0), [(1.0, 5.0)],
+        likelihood=poisson_gaussian_log_likelihood(0.01),
+    )
+    pt = JaxParallelTempering(model, 1.5 ** (np.arange(-8, 1)), PTConfig(kernel="nuts", swap_every=5))
+    post = pt.run(burn_in=300, samples=400, seed=0).samples_by_temperature[-1]
+    assert abs(post[:, 1].mean() - 3.0) < 0.2  # peak centre recovered

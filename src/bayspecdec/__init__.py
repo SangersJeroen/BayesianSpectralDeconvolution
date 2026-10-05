@@ -9,6 +9,7 @@ from .priors import (
     GammaPrior,
     NormalPrior,
     UniformPrior,
+    FermiDiracPrior,
     IndependentProductPrior,
     paper_synthetic_prior,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "GammaPrior",
     "NormalPrior",
     "UniformPrior",
+    "FermiDiracPrior",
     "IndependentProductPrior",
     "paper_synthetic_prior",
     "GaussianNoise",

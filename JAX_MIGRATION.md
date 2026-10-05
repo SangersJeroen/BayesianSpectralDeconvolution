@@ -25,12 +25,13 @@ The basis can be any differentiable function, including a neural network.
 | Numpy code | JAX equivalent | Notes |
 |---|---|---|
 | `BasisFunction.evaluate(x, params)` | `basis_fn(x, params) -> (K, n)` | Pure function, `jnp` instead of `np`, no Python loops over components (broadcast over `K`). `params` has shape `(n_basis_params, K)`. May be an NN forward pass with weights closed over. |
-| `UniformPrior`, `GammaPrior` (numba `jitclass`) | `jax_backend.UniformPrior`, `jax_backend.GammaPrior` | Ported. Pass them to `make_spectral_model(amplitude_prior=..., basis_priors=[...])`; a `(lo, hi)` tuple is shorthand for uniform. `GammaPrior` takes an explicit `rate=` **or** `scale=`; see the note below. |
+| `UniformPrior`, `GammaPrior`, `NormalPrior` (numba `jitclass`) | `jax_backend.UniformPrior`, `GammaPrior`, `NormalPrior` | Ported. `paper_synthetic_priors()` returns the paper's priors as `(amplitude_prior, basis_priors)`. The JAX `NormalPrior(mean, std)` is the properly normalised density; the numpy one treats `std` as a precision in `log_prob`. Pass them to `make_spectral_model(amplitude_prior=..., basis_priors=[...])`; a `(lo, hi)` tuple is shorthand for uniform. `GammaPrior` takes an explicit `rate=` **or** `scale=`; see the note below. |
 | Other `Prior` classes | `log_prior(theta)` and `sample_prior(key)` in a `JaxModel` | jitclass objects cannot be traced by JAX. Write a pure function, or implement the small `JaxPrior` protocol (`lower`, `upper`, `log_prob`, `sample`). |
-| `Likelihood` classes | `likelihood(y, prediction) -> scalar` | `gaussian_log_likelihood(sigma2)` is provided. Poisson and Poisson+Gaussian are **not ported**. Use `jax.scipy.special.gammaln` for the factorial terms. |
+| `GaussianBasis`, `LorentzianBasis` | `jax_backend.gaussian_basis`, `lorentzian_basis` | Same formulas as pure functions. |
+| `GaussianNoise`, `PoissonNoise`, `PoissonGaussianNoise` | `gaussian_log_likelihood(sigma2)`, `poisson_log_likelihood()`, `poisson_gaussian_log_likelihood(sigma2, half_width=12)` | Pass as `make_spectral_model(likelihood=...)`. The Poisson+Gaussian sum runs over a fixed window of `2*half_width+1` integers around the summand's mode instead of the numpy tolerance loop (see its docstring for when to widen it); it agrees with the numpy class to ~1e-8. Predictions are clamped to a tiny positive floor. |
 | `Parameterization` (`pack`/`unpack`/`to_z`/`from_z`) | `BoxTransform` plus the `[a, p1, p2, ...]` block layout | Bounded parameters use a logistic map, positive ones `exp`. `log_jac` is added to the log density automatically. |
 | `SpectralModel` | `JaxModel` / `make_spectral_model` | Same role, but holds callables instead of objects. |
-| `ParallelTempering` + `hmc_kernel_factory` | `JaxParallelTempering` + `PTConfig` | See behaviour changes below. |
+| `ParallelTempering` + `hmc_kernel_factory` / `nuts_kernel_factory` / `metropolis_kernel_factory` | `JaxParallelTempering` + `PTConfig(kernel="hmc" \| "nuts" \| "rwm")` | See behaviour changes and "Kernels" below. |
 | `select_model_size` | `jax_backend.select_model_size` | Takes `betas` and a `PTConfig` instead of a `sampler_factory`. |
 | `np.random.Generator` | `jax.random` keys | Pass `seed` to `run`; keys are split internally per chain. |
 
@@ -65,6 +66,20 @@ keep working.
 - **The likelihood is the corrected one.** `GaussianNoise.log_prob` in `likelihoods.py` multiplies
   terms that should be added, so numpy and JAX values of `-log Z` are not comparable until that is fixed.
 
+## Kernels
+
+`PTConfig(kernel=...)` picks the within-temperature transition; all three are vmapped over temperatures,
+share the replica exchange, and adapt step size (dual averaging) and diagonal metric per chain.
+
+- `"hmc"`: fixed `num_leapfrog` steps (default).
+- `"nuts"`: multinomial No-U-Turn sampler (`jax_backend/nuts.py`), iterative with checkpointed subtree
+  U-turn checks, so it jits and vmaps. `max_tree_depth` caps the trajectory at `2**depth` leapfrog steps
+  (default 8). The slice variable of the numpy sampler is replaced by multinomial weights, so draws are not
+  comparable one-to-one. Under `vmap` each iteration costs as much as the deepest tree across temperatures.
+  `within_acceptance` reports the fraction of transitions that moved.
+- `"rwm"`: Gaussian random walk in `z`-space with proposal scale `step_size * sqrt(inverse_mass)`.
+  `target_accept` defaults to 0.234 for this kernel (0.8 for the others).
+
 ## Mass-matrix adaptation
 
 On by default (`PTConfig(adapt_mass=True)`). During warmup each temperature estimates the variance of
@@ -83,8 +98,7 @@ adaptation is skipped.
 
 ## Not yet ported
 
-- NUTS (`samplers/nuts.py`), random-walk Metropolis and the `MCMCKernel` protocol
-- Poisson and Poisson+Gaussian likelihoods; the Normal prior
+- The `MCMCKernel` protocol and per-kernel factories: kernels are selected through `PTConfig` instead
 - Dense mass matrices (only a diagonal metric is implemented)
 - `diagnostics.py` and `spectrum_gen.py` stay numpy. They run on results, not inside the sampler.
 
@@ -94,4 +108,5 @@ adaptation is skipped.
 2. Build the model with `make_spectral_model` (or `JaxModel` for priors other than uniform and Gamma).
 3. Run `notebooks/examples/HMC_jax_example.py` as a template and compare `-log Z` and posteriors with the numpy run
    (after the likelihood fix).
-4. Port the remaining likelihoods and priors as needed, then retire the numpy samplers.
+4. Port any custom likelihoods and priors as needed. Everything in the numpy package that runs inside a
+   sampler now has a JAX counterpart, so the numpy samplers can be retired once your runs agree.
