@@ -489,3 +489,46 @@ def test_spectral_model_with_poisson_gaussian_likelihood_runs_under_nuts():
     pt = JaxParallelTempering(model, 1.5 ** (np.arange(-8, 1)), PTConfig(kernel="nuts", swap_every=5))
     post = pt.run(burn_in=300, samples=400, seed=0).samples_by_temperature[-1]
     assert abs(post[:, 1].mean() - 3.0) < 0.2  # peak centre recovered
+
+
+def test_poisson_gaussian_with_gain_matches_direct_sum():
+    from scipy.special import logsumexp
+    from bayspecdec.jax_backend import poisson_gaussian_log_likelihood
+
+    rng = np.random.default_rng(3)
+    gain, sigma2 = 4.0, 25.0
+    mean = rng.uniform(5.0, 400.0, size=20)  # prediction, in counts
+    y = gain * rng.poisson(mean / gain) + rng.normal(0, np.sqrt(sigma2), 20)
+    k = np.arange(0, 400)[None, :]
+    ref = logsumexp(
+        stats.poisson.logpmf(k, (mean / gain)[:, None]) + stats.norm.logpdf(y[:, None], gain * k, np.sqrt(sigma2)),
+        axis=1,
+    ).sum()
+    ours = poisson_gaussian_log_likelihood(sigma2, half_width=60, gain=gain)(jnp.asarray(y), jnp.asarray(mean))
+    np.testing.assert_allclose(ours, ref, rtol=1e-9)
+
+
+def test_poisson_gaussian_gives_clear_error_when_passed_uncalled():
+    from bayspecdec.jax_backend import poisson_gaussian_log_likelihood
+
+    with pytest.raises(TypeError, match="returns the likelihood"):
+        poisson_gaussian_log_likelihood(jnp.ones(3))
+    with pytest.raises(ValueError):
+        poisson_gaussian_log_likelihood(1.0, gain=0.0)
+
+
+def test_heteroscedastic_gaussian_approximates_poisson_gaussian_at_large_counts():
+    from bayspecdec.jax_backend import (
+        heteroscedastic_gaussian_log_likelihood,
+        poisson_gaussian_log_likelihood,
+    )
+
+    rng = np.random.default_rng(4)
+    gain, read_var = 5.0, 900.0
+    mean = rng.uniform(2e3, 2e5, size=30)
+    y = gain * rng.poisson(mean / gain) + rng.normal(0, 30.0, 30)
+    exact = poisson_gaussian_log_likelihood(read_var, half_width=400, gain=gain)(jnp.asarray(y), jnp.asarray(mean))
+    approx = heteroscedastic_gaussian_log_likelihood(read_var, gain)(jnp.asarray(y), jnp.asarray(mean))
+    assert abs(float(exact - approx)) < 0.05 * 30  # < 0.05 nats per bin
+    grad = jax.grad(lambda p: heteroscedastic_gaussian_log_likelihood(read_var, gain)(jnp.asarray(y), p))(jnp.asarray(mean))
+    assert np.all(np.isfinite(grad))

@@ -14,6 +14,7 @@ from .model import (
 from .basis import gaussian_basis, lorentzian_basis
 from .likelihoods import (
     gaussian_log_likelihood,
+    heteroscedastic_gaussian_log_likelihood,
     poisson_gaussian_log_likelihood,
     poisson_log_likelihood,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "paper_synthetic_priors",
     "gaussian_basis",
     "lorentzian_basis",
+    "heteroscedastic_gaussian_log_likelihood",
     "poisson_log_likelihood",
     "poisson_gaussian_log_likelihood",
     "gaussian_log_likelihood",
