@@ -12,7 +12,9 @@ Key design points
 - Integrates with ``StepSizeAdaptation`` (dual averaging) during warmup.
 - Uses the same ``MetropolisState`` as Metropolis/HMC for compatibility with
   ``ParallelTempering``.
-- No JAX dependency; uses numerical central-difference gradients.
+- No JAX dependency; uses numerical central-difference gradients. Trajectories live in the
+  unconstrained coordinates of the model's parameterization (see ``jax_backend.nuts`` for the
+  jittable multinomial variant).
 
 Algorithmic variant
 -------------------
@@ -94,9 +96,10 @@ class _LeafResult:
     p_plus: Array
     theta_proposal: Array
     n_valid: int  # number of slice-valid states in this sub-tree
-    divergent: bool  # did any step diverge?
+    divergent: bool  # did any step diverge (energy error)?
     sum_accept: float  # cumulative accept prob for adaptation
     n_accept: int  # count for the above
+    turning: bool = False  # did a sub-tree U-turn? (stops growth but is not a divergence)
 
 
 # ---------------------------------------------------------------------------
@@ -172,12 +175,15 @@ class NoUTurnSampler(MCMCKernel):
 
     # -- energy helpers ------------------------------------------------------
 
-    def potential_energy(self, theta: Array) -> float:
-        val = self.model.log_tempered_target(theta, self.beta)
+    # All dynamics run in the unconstrained coordinates z of the model's parameterization;
+    # the arguments below named ``theta`` are z-space points.
+
+    def potential_energy(self, z: Array) -> float:
+        val = self.model.log_target_z(z, self.beta)
         return float(-val) if np.isfinite(val) else np.inf
 
-    def grad_potential_energy(self, theta: Array) -> Array:
-        return numerical_gradient(self.potential_energy, theta)
+    def grad_potential_energy(self, z: Array) -> Array:
+        return numerical_gradient(self.potential_energy, z)
 
     def kinetic_energy(self, p: Array) -> float:
         return float(0.5 * np.dot(p, self.inverse_mass_matrix * p))
@@ -254,8 +260,8 @@ class NoUTurnSampler(MCMCKernel):
         # First half
         r1 = self._build_tree(theta, p, log_u, direction, depth - 1, step_size, H0)
 
-        if r1.divergent:
-            return r1  # Short-circuit: already diverged
+        if r1.divergent or r1.turning:
+            return r1  # Short-circuit: already diverged / turned
 
         # Grow in the same direction from the frontier endpoint
         if direction == -1:
@@ -306,7 +312,8 @@ class NoUTurnSampler(MCMCKernel):
             p_plus=p_plus,
             theta_proposal=proposal,
             n_valid=n_total,
-            divergent=r2.divergent or uturn,
+            divergent=r2.divergent,
+            turning=r2.turning or uturn,
             sum_accept=r1.sum_accept + r2.sum_accept,
             n_accept=r1.n_accept + r2.n_accept,
         )
@@ -324,9 +331,10 @@ class NoUTurnSampler(MCMCKernel):
         else:
             eps = self.config.step_size
 
-        # Resample momentum
+        # Resample momentum; work in z-space
+        z_start = self.model.parameterization.to_z(state.theta)
         p0 = self._sample_momentum()
-        H0 = self.hamiltonian(state.theta, p0)
+        H0 = self.hamiltonian(z_start, p0)
 
         # Sample slice variable u ~ Uniform(0, exp(−H0))
         # ⟺ log_u = log(U) − H0  where U ~ Uniform(0, 1)
@@ -337,12 +345,12 @@ class NoUTurnSampler(MCMCKernel):
         log_u = float(np.log(self.rng.random())) - H0
 
         # Initialise doubly-linked tree endpoints at the current state
-        theta_minus = state.theta.copy()
+        theta_minus = z_start.copy()
         p_minus = p0.copy()
-        theta_plus = state.theta.copy()
+        theta_plus = z_start.copy()
         p_plus = p0.copy()
 
-        theta_new = state.theta.copy()
+        theta_new = z_start.copy()
         n_valid = 1  # current state is always slice-valid
 
         sum_accept = 0.0
@@ -382,7 +390,7 @@ class NoUTurnSampler(MCMCKernel):
                 p_plus = result.p_plus
 
             # Biased progressive update: accept new proposal
-            if not result.divergent and n_valid > 0:
+            if not (result.divergent or result.turning) and n_valid > 0:
                 accept_prob = min(1.0, result.n_valid / n_valid)
                 if self.rng.random() < accept_prob:
                     theta_new = result.theta_proposal
@@ -392,7 +400,7 @@ class NoUTurnSampler(MCMCKernel):
             n_accept_total += result.n_accept
 
             # Stop on divergence or global U-turn
-            stop = result.divergent or is_uturn(
+            stop = result.divergent or result.turning or is_uturn(
                 theta_minus,
                 theta_plus,
                 p_minus,
@@ -408,12 +416,15 @@ class NoUTurnSampler(MCMCKernel):
         self.tree_depth_last = depth
 
         # Update state
-        if not np.array_equal(theta_new, state.theta):
+        if not np.array_equal(theta_new, z_start):
             new_U = self.potential_energy(theta_new)
             if np.isfinite(new_U):
-                state.theta = theta_new
-                state.log_target = float(-new_U)
-                state.energy = self.model.energy(theta_new)
+                theta_state = self.model.parameterization.from_z(theta_new)
+                state.theta = theta_state
+                state.log_target = float(
+                    self.model.log_tempered_target(theta_state, self.beta)
+                )
+                state.energy = self.model.energy(theta_state)
                 state.accepted += 1
 
         # Update step-size adaptation

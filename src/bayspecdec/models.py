@@ -1,4 +1,5 @@
 import numpy as np
+from typing import Optional
 from .basis import BasisFunction
 from .priors import Prior
 from .likelihoods import Likelihood
@@ -29,6 +30,16 @@ class SpectralModel:
         self.parameterization = parameterization
         self.n = self.x.size
 
+        n_noise = int(getattr(parameterization, "n_noise", 0))
+        n_lik = int(getattr(likelihood, "n_noise_params", 0))
+        if n_noise != n_lik:
+            raise ValueError(
+                f"The likelihood reads {n_lik} noise hyperparameter(s) but the parameterization "
+                f"has {n_noise}. For a sampled sigma^2 use GaussianNoise(sigma2=None) with a "
+                "parameterization built with n_noise=1 (and a prior with a noise entry)."
+            )
+        self.n_noise = n_noise
+
     def predict(self, theta: Array) -> Array:
         # Expected structure: a, basis_params...
         # For simplicity, assuming parameterization unpack returns (amplitudes, param1, param2, ...)
@@ -44,13 +55,19 @@ class SpectralModel:
         basis_matrix = self.basis.evaluate(self.x, basis_params_array)  # shape (K, n)
         return a @ basis_matrix
 
+    def noise_context(self, theta: Array) -> Optional[dict]:
+        """Noise hyperparameters in ``theta`` for the likelihood (``None`` if there are none)."""
+        if self.n_noise == 0:
+            return None
+        return {"noise": self.parameterization.noise(theta)}
+
     def energy(self, theta: Array) -> float:
         pred = self.predict(theta)
-        return self.likelihood.energy(self.y, pred)
+        return self.likelihood.energy(self.y, pred, self.noise_context(theta))
 
     def log_likelihood(self, theta: Array) -> float:
         pred = self.predict(theta)
-        return self.likelihood.log_prob(self.y, pred)
+        return self.likelihood.log_prob(self.y, pred, self.noise_context(theta))
 
     def log_prior(self, theta: Array) -> float:
         return self.prior.log_prob(theta, self.parameterization)
@@ -70,3 +87,14 @@ class SpectralModel:
         ll_part = self.log_likelihood(theta)
 
         return beta * ll_part + lp
+
+    def log_target_z(self, z: Array, beta: float) -> float:
+        """
+        Log density of the tempered target in the unconstrained coordinates ``z``:
+        ``log q_beta(theta(z)) + log |d theta / d z|``. This is what gradient-based samplers use.
+        """
+        theta = self.parameterization.from_z(z)
+        lt = self.log_tempered_target(theta, beta)
+        if not np.isfinite(lt):
+            return -np.inf
+        return lt + self.parameterization.log_jacobian(theta)

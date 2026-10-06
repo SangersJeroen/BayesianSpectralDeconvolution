@@ -14,6 +14,7 @@ from .model import (
 from .basis import gaussian_basis, lorentzian_basis
 from .likelihoods import (
     gaussian_log_likelihood,
+    gaussian_noise_likelihood,
     heteroscedastic_gaussian_log_likelihood,
     poisson_gaussian_log_likelihood,
     poisson_log_likelihood,
@@ -24,6 +25,7 @@ from .priors import (
     NormalPrior,
     UniformPrior,
     FermiDiracPrior,
+    log_scale_prior,
     paper_synthetic_priors,
 )
 from .selection import JaxModelRun, select_model_size
@@ -38,6 +40,8 @@ __all__ = [
     "UniformPrior",
     "FermiDiracPrior",
     "paper_synthetic_priors",
+    "log_scale_prior",
+    "gaussian_noise_likelihood",
     "gaussian_basis",
     "lorentzian_basis",
     "heteroscedastic_gaussian_log_likelihood",

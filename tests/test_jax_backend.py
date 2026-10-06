@@ -532,3 +532,99 @@ def test_heteroscedastic_gaussian_approximates_poisson_gaussian_at_large_counts(
     assert abs(float(exact - approx)) < 0.05 * 30  # < 0.05 nats per bin
     grad = jax.grad(lambda p: heteroscedastic_gaussian_log_likelihood(read_var, gain)(jnp.asarray(y), p))(jnp.asarray(mean))
     assert np.all(np.isfinite(grad))
+
+
+# -- sampled noise hyperparameter ------------------------------------------------------------
+
+
+def test_fermi_dirac_prior_is_normalised_and_sampler_matches():
+    from scipy.integrate import quad
+    from bayspecdec.jax_backend import FermiDiracPrior
+
+    p = FermiDiracPrior(mu=1.0, temperature=0.2)
+    total = quad(lambda x: float(np.exp(p.log_prob(jnp.asarray(x)))), 0.0, 40.0, points=[1.0])[0]
+    np.testing.assert_allclose(total, 1.0, rtol=1e-6)
+    s = np.asarray(p.sample(jax.random.PRNGKey(0), (100_000,)))
+    f = lambda t: 1.0 / (1.0 + np.exp((t - 1.0) / 0.2))
+    norm = quad(f, 0.0, 40.0)[0]
+    for q in (0.5, 1.0, 1.5):
+        np.testing.assert_allclose((s < q).mean(), quad(f, 0.0, q)[0] / norm, atol=0.01)
+
+
+def _noisy_lorentz_data(sigma2, n=200, seed=0):
+    x = np.linspace(0.0, 6.0, n)
+    clean = 2.0 * 0.5 / ((x - 3.0) ** 2 + 0.5)
+    y = clean + np.random.default_rng(seed).normal(0.0, np.sqrt(sigma2), n)
+    return x, y
+
+
+def test_sampled_noise_layout_split_and_validation():
+    from bayspecdec.jax_backend import log_scale_prior
+
+    x, y = _noisy_lorentz_data(0.01, n=20)
+    m = make_spectral_model(
+        x, y, lorentz_basis, 2, (0.5, 5.0), [(1.0, 5.0)], noise_prior=log_scale_prior(1e-6, 1.0)
+    )
+    assert m.ndim == 2 * 2 + 1 and m.n_noise == 1
+    theta = m.sample_prior(jax.random.PRNGKey(0))
+    phys, noise = m.split(theta)
+    assert phys.shape == (4,) and noise.shape == (1,)
+    assert np.log(1e-6) <= float(noise[0]) <= 0.0
+    assert m.predict(theta).shape == (20,)
+    assert m.transform.lower[-1] == np.log(1e-6) and m.transform.upper[-1] == 0.0
+    # the sigma^2 term is part of the density: ll must vary with s
+    assert float(m.log_likelihood(theta.at[-1].set(-8.0))) != float(m.log_likelihood(theta.at[-1].set(-2.0)))
+
+    with pytest.raises(ValueError):
+        make_spectral_model(x, y, lorentz_basis, 1, (0.5, 5.0), [(1.0, 5.0)], sigma2=0.1, noise_prior=log_scale_prior(1e-6, 1.0))
+    with pytest.raises(ValueError):
+        make_spectral_model(x, y, lorentz_basis, 1, (0.5, 5.0), [(1.0, 5.0)], noise_likelihood=lambda y, p, s: 0.0)
+    with pytest.raises(ValueError):
+        make_spectral_model(x, y, lorentz_basis, 1, (0.5, 5.0), [(1.0, 5.0)])
+
+
+def test_fixed_noise_models_are_unchanged_by_the_noise_machinery():
+    x, y = _noisy_lorentz_data(0.01, n=20)
+    m = make_spectral_model(x, y, lorentz_basis, 1, (0.5, 5.0), [(1.0, 5.0)], sigma2=0.01)
+    assert m.n_noise == 0 and m.ndim == 2
+    phys, noise = m.split(jnp.array([2.0, 3.0]))
+    assert phys.shape == (2,) and noise.shape == (0,)
+
+
+@pytest.mark.parametrize("kernel", ["hmc", "nuts"])
+def test_sampled_sigma2_is_recovered_and_amplitude_agrees_with_fixed_noise(kernel):
+    from bayspecdec.jax_backend import log_scale_prior
+
+    true_s2 = 0.04
+    x, y = _noisy_lorentz_data(true_s2, n=300)
+    args = (x, y, lorentz_basis, 1, (0.5, 5.0), [(1.0, 5.0)])
+    betas = 1.5 ** (np.arange(-12, 1))
+    cfg = PTConfig(kernel=kernel, swap_every=5)
+
+    free = make_spectral_model(*args, noise_prior=log_scale_prior(1e-6, 1.0))
+    r_free = JaxParallelTempering(free, betas, cfg).run(burn_in=600, samples=1500, seed=1)
+    post = r_free.samples_by_temperature[-1]
+    s2 = np.exp(post[:, -1])
+    assert abs(s2.mean() - true_s2) < 0.25 * true_s2  # ~ sigma^2 * n / (n - dof) +- sqrt(2/n)
+
+    fixed = make_spectral_model(*args, sigma2=true_s2)
+    r_fix = JaxParallelTempering(fixed, betas, cfg).run(burn_in=600, samples=1500, seed=1)
+    np.testing.assert_allclose(post[:, :2].mean(axis=0), r_fix.samples_by_temperature[-1].mean(axis=0), atol=0.1)
+
+
+def test_sampled_noise_gives_comparable_evidence_across_K():
+    from bayspecdec.jax_backend import log_scale_prior
+
+    x, y = _noisy_lorentz_data(0.01, n=150)
+
+    def factory(K):
+        return make_spectral_model(
+            x, y, lorentz_basis, K, (0.2, 5.0), [(0.5, 5.5)], noise_prior=log_scale_prior(1e-6, 1.0)
+        )
+
+    runs = select_model_size(
+        factory, [1, 2], betas=1.5 ** (np.arange(-20, 1)), burn_in=600, samples=800,
+        config=PTConfig(swap_every=5), verbose=False,
+    )
+    assert np.all(np.isfinite([r.stochastic_complexity for r in runs]))
+    assert min(runs, key=lambda r: r.stochastic_complexity).K == 1  # data hold exactly one peak

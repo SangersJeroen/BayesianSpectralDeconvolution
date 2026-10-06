@@ -135,7 +135,7 @@ class FermiDiracPrior:
 
     def log_prob(self, x):
         z = (x - self.mu) / self.temperature
-        out = -jnp.log(self.temperature) - jnp.exp(self.log_L) - jnp.logaddexp(0.0, z)
+        out = -jnp.log(self.temperature) - self.log_L - jnp.logaddexp(0.0, z)
         return jnp.where(x < 0, -np.inf, out)
 
 
@@ -143,12 +143,22 @@ def paper_synthetic_priors() -> tuple[JaxPrior, list[JaxPrior]]:
     """
     ``(amplitude_prior, basis_priors)`` of the paper's synthetic setting (Section 3.1),
     for ``make_spectral_model`` with a ``(mu, b)`` basis: Gamma amplitudes, Normal centres,
-    Gamma bandwidths. ``scale=`` reproduces the numpy ``paper_synthetic_prior`` sampling.
+    Gamma bandwidths. Matches the numpy ``paper_synthetic_prior`` (rates 5 and 0.04).
     """
-    return GammaPrior(5.0, scale=5.0), [
+    return GammaPrior(5.0, rate=5.0), [
         NormalPrior(1.5, 5.0),
-        GammaPrior(5.0, scale=0.04),
+        GammaPrior(5.0, rate=0.04),
     ]
+
+
+def log_scale_prior(lower: float, upper: float) -> UniformPrior:
+    """
+    Prior for a sampled noise variance ``sigma^2`` in ``[lower, upper]``, expressed on
+    ``s = log sigma^2``: uniform in ``s`` is the log-uniform (Jeffreys-like) prior on ``sigma^2``.
+    """
+    if not (0.0 < lower < upper):
+        raise ValueError("need 0 < lower < upper")
+    return UniformPrior(math.log(lower), math.log(upper))
 
 
 def as_prior(spec) -> JaxPrior:

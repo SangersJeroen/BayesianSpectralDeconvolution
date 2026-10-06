@@ -4,6 +4,9 @@ hmc.py — Fixed-trajectory Hamiltonian Monte Carlo kernel.
 Implements:
   - Standard velocity Verlet (leapfrog) integrator.
   - Numerical central-difference gradient (no autodiff dependency).
+  - The dynamics run in the unconstrained coordinates ``z`` of the model's parameterization
+    (target density in z includes ``log|d theta / d z|``), so trajectories never leave the
+    prior support. For autodiff gradients and batched temperatures use ``jax_backend``.
   - Diagonal mass matrix / metric.
   - Metropolis correction with energy-error guard.
   - Optional dual-averaging step-size adaptation during warmup.
@@ -79,22 +82,20 @@ def numerical_gradient(
     """
     Central-difference numerical gradient of scalar function *f* at *x*.
 
-    O(2·d) function evaluations.  Not for production throughput — use autodiff
-    (JAX / torch) when that becomes available.
+    ``2 d`` function evaluations. Coordinates where *f* is not finite on either side get a
+    zero gradient (best effort; the caller detects the bad Hamiltonian).
     """
-    grad = np.empty_like(x)
+    x = np.asarray(x, dtype=float)
+    grad = np.zeros_like(x)
     for i in range(x.size):
         x_plus = x.copy()
+        x_minus = x.copy()
         x_plus[i] += eps
-        # x_minus = x.copy()
-        # x_minus[i] -= eps
+        x_minus[i] -= eps
         fp = f(x_plus)
-        # fm = f(x_minus)
-        fx = f(x)
-        if not np.isfinite(fp) or not np.isfinite(fx):
-            grad[i] = 0.0  # best-effort; caller should detect bad H
-        else:
-            grad[i] = (fp - fx) / (1.0 * eps)
+        fm = f(x_minus)
+        if np.isfinite(fp) and np.isfinite(fm):
+            grad[i] = (fp - fm) / (2.0 * eps)
     return grad
 
 
@@ -110,29 +111,28 @@ def leapfrog(
     n_steps: int,
     grad_potential_fn: Callable[[Array], Array],
     inverse_mass_matrix: Array,
-    transforms: tuple[Callable[[Array], Array], Callable[[Array], Array]]
 ) -> tuple[Array, Array]:
     """
     Velocity-Verlet (leapfrog) integrator.
 
     Performs ``n_steps`` full leapfrog steps starting from (θ, p).
-    The returned (θ', p') is ready for a Metropolis accept/reject test.
+    The returned (θ', p') is ready for a Metropolis accept/reject test. The kernels call it
+    with the unconstrained coordinates ``z`` in place of ``θ``.
 
     Parameters
     ----------
     inverse_mass_matrix:
         Diagonal inverse mass matrix stored as a 1-D array (M⁻¹ elementwise).
     """
-    (to_z, from_z) = transforms
-    theta_t = theta.copy()
-    p_t = momentum.copy()
+    theta_t = np.array(theta, dtype=float)
+    p_t = np.array(momentum, dtype=float)
 
     # Initial half-step on momentum
     p_t -= 0.5 * step_size * grad_potential_fn(theta_t)
 
     for i in range(n_steps):
         # Full position step
-        theta_t = from_z(to_z(theta_t) + step_size * (inverse_mass_matrix * p_t))
+        theta_t = theta_t + step_size * (inverse_mass_matrix * p_t)
 
         # Full momentum step (skip final to merge with terminal half-step)
         grad = grad_potential_fn(theta_t)
@@ -192,13 +192,13 @@ class HamiltonianMonteCarlo(MCMCKernel):
 
     # -- energy functions ----------------------------------------------------
 
-    def potential_energy(self, theta: Array) -> float:
-        """U(θ) = −log q_β(θ)."""
-        val = self.model.log_tempered_target(theta, self.beta)
+    def potential_energy(self, z: Array) -> float:
+        """U(z) = −log q_β(θ(z)) − log|dθ/dz|, the potential in unconstrained coordinates."""
+        val = self.model.log_target_z(z, self.beta)
         return float(-val) if np.isfinite(val) else np.inf
 
-    def grad_potential_energy(self, theta: Array) -> Array:
-        return numerical_gradient(self.potential_energy, theta)
+    def grad_potential_energy(self, z: Array) -> Array:
+        return numerical_gradient(self.potential_energy, z)
 
     def kinetic_energy(self, momentum: Array) -> float:
         """K(p) = ½ pᵀ M⁻¹ p."""
@@ -222,32 +222,28 @@ class HamiltonianMonteCarlo(MCMCKernel):
             eps = self.config.step_size
 
         # 1. Resample momentum
+        z0 = self.model.parameterization.to_z(state.theta)
         p0 = self._sample_momentum()
-        U0 = self.potential_energy(state.theta)
+        U0 = self.potential_energy(z0)
         K0 = self.kinetic_energy(p0)
         H0 = U0 + K0
 
-        # 2. Leapfrog integration
+        # 2. Leapfrog integration in z-space
         divergent = False
-        transforms = (
-            self.model.parameterization.to_z,
-            self.model.parameterization.from_z,
-        )
         try:
-            theta1, p1 = leapfrog(
-                state.theta,
+            z1, p1 = leapfrog(
+                z0,
                 p0,
                 eps,
                 self.config.num_steps,
                 self.grad_potential_energy,
                 self.inverse_mass_matrix,
-                transforms=transforms,
             )
-            U1 = self.potential_energy(theta1)
+            U1 = self.potential_energy(z1)
             K1 = self.kinetic_energy(p1)
             H1 = U1 + K1
         except ValueError:
-            theta1, U1, K1, H1 = state.theta, np.inf, 0.0, np.inf
+            z1, U1, K1, H1 = z0, np.inf, 0.0, np.inf
 
         # 3. Metropolis correction
         delta_H = H1 - H0
@@ -268,8 +264,9 @@ class HamiltonianMonteCarlo(MCMCKernel):
 
         state.attempted += 1
         if accept:
+            theta1 = self.model.parameterization.from_z(z1)
             state.theta = theta1
-            state.log_target = float(-U1)
+            state.log_target = float(self.model.log_tempered_target(theta1, self.beta))
             state.energy = self.model.energy(theta1)
             state.accepted += 1
 

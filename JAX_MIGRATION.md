@@ -58,13 +58,52 @@ keep working.
 - **No progress bar.** The whole run is one compiled call. Compile time is included in the first run per `K`.
 - **Exchange statistics count the sampling phase only.** The numpy sampler also counted burn-in.
 - **Different random streams.** Results match statistically, not draw-for-draw.
-- **`GammaPrior` conventions differ from numpy.** The numpy class samples and exponentiates with its
-  `rate` argument as a *scale* but normalises it as a *rate*, so its `log_prob` is off by a constant
-  (this shifts `log Z`). Port `GammaPrior(shape, rate=r)` from numpy as
-  `GammaPrior(shape, scale=r)` to match its sampling behaviour. The JAX version is normalised correctly
-  and checked against `scipy.stats.gamma`.
-- **The likelihood is the corrected one.** `GaussianNoise.log_prob` in `likelihoods.py` multiplies
-  terms that should be added, so numpy and JAX values of `-log Z` are not comparable until that is fixed.
+- **`GammaPrior` conventions now agree with numpy.** Both take `GammaPrior(shape, rate)` (density
+  `∝ x^(shape-1) exp(-rate x)`); the JAX class also accepts `scale=1/rate`.
+- **Both backends use the same normalised Gaussian likelihood.** The numpy `GaussianNoise.log_prob`
+  used to multiply terms that should be added; it is fixed, so numpy and JAX `-log Z` are comparable.
+  The numpy `NormalPrior` (it treated `std` as a precision), `UniformPrior` (no support check) and
+  `FermiDiracPrior` (normaliser) were fixed too.
+
+## Sampled noise (sigma^2 as a hyperparameter)
+
+Both backends can treat the noise variance as an unknown with its own prior instead of a fixed number.
+`theta` gets trailing noise element(s); the default is `s = log sigma^2` with Gaussian noise. The likelihood
+stays fully normalised, so `log Z` is marginalised over the noise (comparable across `K` for a fixed noise prior).
+
+```python
+from bayspecdec.jax_backend import make_spectral_model, log_scale_prior
+
+model = make_spectral_model(x, y, basis_fn, K, amplitude_prior, basis_priors,
+                            noise_prior=log_scale_prior(1e-8, 1e-1))   # instead of sigma2=...
+phys, noise = model.split(theta)        # noise[..., 0] = log sigma^2
+```
+
+* JAX: `noise_prior=` (a prior or a sequence of priors on the noise parameters) switches the mode;
+  `noise_likelihood(y, pred, s)` replaces the default Gaussian one for other noise models. `sigma2=` /
+  `likelihood=` select fixed noise and cannot be combined with it.
+* numpy: build the pieces with a noise block and `GaussianNoise(sigma2=None)`:
+
+```python
+from bayspecdec.priors import ProductPrior, log_scale_prior
+from bayspecdec.parameters import BlockParameterization
+
+prior = ProductPrior(amplitude_prior, [centre_prior], [log_scale_prior(1e-8, 1e-1)])
+param = BlockParameterization(K, prior.block_bounds(), prior.noise_bounds())
+model = SpectralModel(x, y, basis, prior, GaussianNoise(None), param)
+```
+
+  `SpectralModel` checks that likelihood and parameterization agree on the number of noise parameters.
+  `DefaultParameterization(K, n_noise=1, noise_bounds=[...])` / `IndependentProductPrior(..., noise=...)`
+  do the same for the paper's `(a, mu, b)` layout.
+
+## Numpy backend fixes
+
+The numpy samplers now run in the unconstrained coordinates of the model's parameterization
+(`BlockParameterization` / `DefaultParameterization`: logistic map for boxes, `exp` for positive
+parameters), with the `log |d theta / d z|` term in the target; HMC/NUTS gradients are central differences
+in `z`, `RandomWalkMetropolis` takes `use_log_jacobian`. The numpy NUTS no longer counts U-turns as
+divergences.
 
 ## Kernels
 

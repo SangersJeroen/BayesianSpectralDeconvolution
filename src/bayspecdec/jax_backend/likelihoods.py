@@ -30,6 +30,18 @@ def gaussian_log_likelihood(sigma2: float) -> Callable[[Array, Array], Array]:
     return log_prob
 
 
+def gaussian_noise_likelihood() -> Callable[[Array, Array, Array], Array]:
+    """
+    Gaussian noise with a sampled variance: ``(y, prediction, s) -> scalar`` with
+    ``s = [log sigma^2]``. For ``make_spectral_model(noise_prior=...)``.
+    """
+
+    def log_prob(y: Array, prediction: Array, s: Array) -> Array:
+        return gaussian_log_likelihood(jnp.exp(s[0]))(y, prediction)
+
+    return log_prob
+
+
 def poisson_log_likelihood() -> Callable[[Array, Array], Array]:
     """
     ``y_i ~ Poisson(prediction_i)``: ``sum_i y_i log(lam_i) - lam_i - log(y_i!)``.
