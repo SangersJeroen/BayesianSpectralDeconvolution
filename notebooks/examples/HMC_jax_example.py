@@ -50,8 +50,8 @@ def model_builder(K: int):
         y,
         blur_kernel,
         K,
-        amplitude_bounds=(0.2, 1.2),
-        basis_param_bounds=[(1.0, 11.0)],
+        amplitude_prior=(0.2, 1.2),
+        basis_priors=[(1.0, 11.0)],
         sigma2=1e-4,
     )
 
@@ -66,7 +66,7 @@ if __name__ == "__main__":
         betas=betas,
         burn_in=1_000,
         samples=1_000,
-        config=PTConfig(num_leapfrog=10, swap_every=10),
+        config=PTConfig(kernel="hmc", num_leapfrog=10, swap_every=10),  # or kernel="nuts" / "rwm",
     )
     print(f"total: {time.perf_counter() - t0:.1f}s (includes JIT compilation per K)")
 
