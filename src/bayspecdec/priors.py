@@ -1,179 +1,177 @@
-import numba
-from numba.experimental.jitclass.decorators import jitclass
-import numpy as np
-from typing import Protocol, runtime_checkable
-from .parameters import Parameterization
+"""
+priors.py — Element-wise priors for the JAX backend.
+
+A prior here is a small immutable object with
+
+* ``lower`` / ``upper``: the support. ``make_spectral_model`` uses it to choose the
+  unconstrained reparameterisation (logistic for a finite box, ``exp`` for ``(0, inf)``).
+* ``log_prob(x)``: element-wise log density, ``-inf`` outside the support.
+* ``sample(key, shape)``: draws used to initialise the chains.
+
+All methods are pure JAX, so they can be jitted and differentiated.
+"""
+
+from __future__ import annotations
 
 import math
+from typing import Optional, Protocol, Sequence, Union, runtime_checkable
 
-Array = np.ndarray
+import jax
+import jax.numpy as jnp
+import numpy as np
 
-@numba.njit
-def _log_expm1(x):
+Array = jax.Array
+
+
+def _log_expm1(x: Array) -> Array:
     # Stable log(exp(x) - 1) for x > 0
-    return np.where(x <= 1.0, np.log(np.expm1(x)), x + np.log1p(-np.exp(-x)))
+    return jnp.where(x <= 1.0, jnp.log(jnp.expm1(x)), x + jnp.log1p(-jnp.exp(-x)))
+
 
 @runtime_checkable
-class Prior(Protocol):
-    def sample(
-        self, rng: np.random.Generator, parameterization: Parameterization
-    ) -> Array: ...
+class JaxPrior(Protocol):
+    lower: float
+    upper: float
 
-    def log_prob(self, theta: Array, parameterization: Parameterization) -> float: ...
+    def log_prob(self, x: Array) -> Array: ...
 
-
-@jitclass([("shape", numba.float64), ("rate", numba.float64)])
-class GammaPrior:
-    def __init__(self, shape: float, rate: float):
-        self.shape = float(shape)
-        self.rate = float(rate)
-
-    def sample(self, rng: np.random.Generator, size: int = 1):
-        return rng.gamma(shape=self.shape, scale=1/self.rate, size=size)
-
-    def log_prob(self, x: Array) -> Array:
-        safe = np.where(x > 0, x, 1.0)
-        out = (
-            self.shape * np.log(self.rate)
-            - math.lgamma(self.shape)
-            + (self.shape - 1.0) * np.log(safe)
-            - self.rate * safe
-        )
-        return np.where(x <= 0, -np.inf, out)
+    def sample(self, key: Array, shape: tuple[int, ...]) -> Array: ...
 
 
-@jitclass([("mean", numba.float64), ("std", numba.float64)])
-class NormalPrior:
-    def __init__(self, mean: float, std: float):
-        self.mean = float(mean)
-        self.std = float(std)
-
-    def sample(self, rng: np.random.Generator, size: int = 1):
-        return rng.normal(loc=self.mean, scale=self.std, size=size)
-
-    def log_prob(self, x: Array) -> Array:
-        return (
-            -np.log(self.std)
-            - 0.5 * np.log(2.0 * np.pi)
-            - 0.5 * ((x - self.mean) / self.std) ** 2
-        )
+PriorSpec = Union[JaxPrior, tuple[float, float]]
+"""A prior object, or a ``(lower, upper)`` tuple meaning uniform."""
 
 
-@jitclass([("lower", numba.float64), ("upper", numba.float64)])
 class UniformPrior:
+    """Uniform density on ``[lower, upper]``."""
+
     def __init__(self, lower: float, upper: float):
+        if not upper > lower:
+            raise ValueError("upper must be greater than lower")
         self.lower = float(lower)
         self.upper = float(upper)
-
-    def sample(self, rng: np.random.Generator, size: int = 1):
-        return rng.uniform(low=self.lower, high=self.upper, size=size)
+        self._log_density = -float(np.log(self.upper - self.lower))
 
     def log_prob(self, x: Array) -> Array:
         inside = (x >= self.lower) & (x <= self.upper)
-        return np.where(inside, -np.log(self.upper - self.lower), -np.inf)
+        return jnp.where(inside, self._log_density, -jnp.inf)
+
+    def sample(self, key: Array, shape: tuple[int, ...]) -> Array:
+        return jax.random.uniform(key, shape, minval=self.lower, maxval=self.upper)
 
 
-@jitclass([
-    ("mu", numba.float64),
-    ("temperature", numba.float64),   # this is kT, same units as mu
-    ("log_L", numba.float64),         # log of L = ln(1 + exp(mu/kT))
-])
+class GammaPrior:
+    """
+    Gamma density on ``(0, inf)``.
+
+    Give exactly one of ``rate`` (density ``∝ x^(shape-1) exp(-rate x)``) or
+    ``scale = 1 / rate``. The two spellings are explicit because the numpy
+    ``GammaPrior(shape, rate)`` samples and exponentiates with its second argument as
+    a *scale* but normalises it as a *rate*; ``GammaPrior(shape, scale=s)`` here
+    matches the numpy sampling behaviour with the correct normalisation.
+    """
+
+    lower = 0.0
+    upper = float("inf")
+
+    def __init__(
+        self, shape: float, rate: Optional[float] = None, scale: Optional[float] = None
+    ):
+        if (rate is None) == (scale is None):
+            raise ValueError("Pass exactly one of rate or scale")
+        if shape <= 0.0:
+            raise ValueError("shape must be positive")
+        self.shape = float(shape)
+        if rate is not None:
+            self.rate = float(rate)
+        else:
+            assert scale is not None  # exactly one of rate / scale was given
+            self.rate = 1.0 / float(scale)
+        if self.rate <= 0.0:
+            raise ValueError("rate/scale must be positive")
+        self._log_norm = self.shape * math.log(self.rate) - math.lgamma(self.shape)
+
+    def log_prob(self, x: Array) -> Array:
+        positive = x > 0.0
+        safe = jnp.where(positive, x, 1.0)  # keeps gradients finite off-support
+        out = self._log_norm + (self.shape - 1.0) * jnp.log(safe) - self.rate * safe
+        return jnp.where(positive, out, -jnp.inf)
+
+    def sample(self, key: Array, shape: Sequence[int]) -> Array:
+        return jax.random.gamma(key, self.shape, shape) / self.rate
+
+
+class NormalPrior:
+    """
+    Normal density with mean ``mean`` and standard deviation ``std``, support the real line.
+
+    The numpy ``NormalPrior`` samples with ``std`` correctly but its ``log_prob`` treats
+    ``std`` as a precision (and drops a factor); this one is the proper normalised density,
+    checked against ``scipy.stats.norm``.
+    """
+
+    lower = -float("inf")
+    upper = float("inf")
+
+    def __init__(self, mean: float, std: float):
+        if std <= 0.0:
+            raise ValueError("std must be positive")
+        self.mean = float(mean)
+        self.std = float(std)
+        self._log_norm = -math.log(self.std) - 0.5 * math.log(2.0 * math.pi)
+
+    def log_prob(self, x: Array) -> Array:
+        return self._log_norm - 0.5 * ((x - self.mean) / self.std) ** 2
+
+    def sample(self, key: Array, shape: Sequence[int]) -> Array:
+        return self.mean + self.std * jax.random.normal(key, shape)
+
+
 class FermiDiracPrior:
+    lower = 0
+    upper = float("inf")
+
     def __init__(self, mu: float, temperature: float):
         self.mu = float(mu)
         self.temperature = float(temperature)
-        # L = log1p(exp(mu/kT)) computed stably via logaddexp(0, mu/kT)
-        self.log_L = np.log(np.logaddexp(0.0, self.mu / self.temperature))
+        self.log_L = jnp.log(jnp.logaddexp(0.0, self.mu / self.temperature))
 
-    def sample(self, rng: np.random.Generator, size: int = 1):
-        L = np.exp(self.log_L)
-        u = 1.0 - rng.random(size)          # u in (0, 1]
+    def sample(self, key: Array, shape: Sequence[int]) -> Array:
+        L = jnp.exp(self.log_L)
+        u = 1.0 - jax.random.uniform(key, shape=shape)
         return self.mu - self.temperature * _log_expm1(u * L)
 
-    def log_prob(self, x):
+    def log_prob(self, x: Array) -> Array:
         z = (x - self.mu) / self.temperature
-        out = -np.log(self.temperature) - self.log_L - np.logaddexp(0.0, z)
-        return np.where(x < 0, -np.inf, out)
+        out = -jnp.log(self.temperature) - self.log_L - jnp.logaddexp(0.0, z)
+        return jnp.where(x < 0, -np.inf, out)
 
 
-def prior_support(prior) -> tuple[float, float]:
-    """``(lower, upper)`` support of one of the element-wise priors, used to pick the transform."""
-    name = type(prior).__name__
-    if name == "UniformPrior":
-        return float(prior.lower), float(prior.upper)
-    if name in ("GammaPrior", "FermiDiracPrior"):
-        return 0.0, float("inf")
-    if name == "NormalPrior":
-        return -float("inf"), float("inf")
-    raise TypeError(f"Unknown support for prior {name!r}; give the bounds explicitly")
-
-
-def log_scale_prior(lower: float, upper: float) -> "UniformPrior":
+def paper_synthetic_priors() -> tuple[JaxPrior, list[JaxPrior]]:
     """
-    Prior for a sampled noise scale ``sigma^2`` in ``[lower, upper]``, expressed on ``s = log sigma^2``:
-    a uniform density on ``s`` is the log-uniform (Jeffreys-like) prior on ``sigma^2``.
+    ``(amplitude_prior, basis_priors)`` of the paper's synthetic setting (Section 3.1),
+    for ``make_spectral_model`` with a ``(mu, b)`` basis: Gamma amplitudes, Normal centres,
+    Gamma bandwidths. Matches the numpy ``paper_synthetic_prior`` (rates 5 and 0.04).
+    """
+    return GammaPrior(5.0, rate=5.0), [
+        NormalPrior(1.5, 5.0),
+        GammaPrior(5.0, rate=0.04),
+    ]
+
+
+def log_scale_prior(lower: float, upper: float) -> UniformPrior:
+    """
+    Prior for a sampled noise variance ``sigma^2`` in ``[lower, upper]``, expressed on
+    ``s = log sigma^2``: uniform in ``s`` is the log-uniform (Jeffreys-like) prior on ``sigma^2``.
     """
     if not (0.0 < lower < upper):
         raise ValueError("need 0 < lower < upper")
-    return UniformPrior(np.log(lower), np.log(upper))
+    return UniformPrior(math.log(lower), math.log(upper))
 
 
-class ProductPrior:
-    """
-    Independent element-wise priors for the ``BlockParameterization`` layout: one prior for the
-    amplitudes, one per basis-parameter block, and optionally one per noise hyperparameter.
-    """
-
-    def __init__(self, amplitude, basis_priors, noise_priors=()):
-        self.amplitude = amplitude
-        self.basis_priors = list(basis_priors)
-        self.noise_priors = list(noise_priors)
-
-    def block_bounds(self) -> list[tuple[float, float]]:
-        return [prior_support(p) for p in [self.amplitude, *self.basis_priors]]
-
-    def noise_bounds(self) -> list[tuple[float, float]]:
-        return [prior_support(p) for p in self.noise_priors]
-
-    def _block_priors(self):
-        return [self.amplitude, *self.basis_priors]
-
-    def sample(self, rng: np.random.Generator, parameterization: Parameterization) -> Array:
-        K = parameterization.K
-        blocks = [p.sample(rng, K) for p in self._block_priors()]
-        blocks += [p.sample(rng, 1) for p in self.noise_priors]
-        return parameterization.pack(blocks)
-
-    def log_prob(self, theta: Array, parameterization: Parameterization) -> float:
-        total = 0.0
-        for p, block in zip(self._block_priors(), parameterization.unpack(theta)):
-            total += np.sum(p.log_prob(block))
-        if self.noise_priors:
-            noise = parameterization.noise(theta)
-            for p, s in zip(self.noise_priors, noise):
-                total += np.sum(p.log_prob(np.atleast_1d(s)))
-        return float(total)
-
-
-class IndependentProductPrior(ProductPrior):
-    """
-    Combines independent priors for a, mu, b (the paper's parameters).
-    This assumes a specific parameterization structure: (a, mu, b)
-    """
-
-    def __init__(self, amplitudes, centers, bandwidths, noise=None):
-        super().__init__(
-            amplitudes, [centers, bandwidths], [] if noise is None else [noise]
-        )
-        self.amplitudes = amplitudes
-        self.centers = centers
-        self.bandwidths = bandwidths
-
-
-def paper_synthetic_prior() -> Prior:
-    """Returns the synthetic prior from the original paper (Section 3.1)."""
-    return IndependentProductPrior(
-        amplitudes=GammaPrior(shape=5.0, rate=5.0),
-        centers=NormalPrior(mean=1.5, std=5.0),
-        bandwidths=GammaPrior(shape=5.0, rate=0.04),
-    )
+def as_prior(spec: PriorSpec) -> JaxPrior:
+    """Accept a prior object or a ``(lower, upper)`` tuple (shorthand for uniform)."""
+    if isinstance(spec, JaxPrior):
+        return spec
+    lower, upper = spec
+    return UniformPrior(lower, upper)

@@ -6,7 +6,7 @@ from .tempering import ExchangeResult
 Array = np.ndarray
 
 
-def plot_exchange_acceptance(result: ExchangeResult):
+def plot_exchange_acceptance(result: ExchangeResult) -> None:
     """Plot exchange acceptance probabilities across temperature pairs."""
     plt.figure()
     plt.bar(range(len(result.exchange_acceptance)), result.exchange_acceptance)
@@ -17,14 +17,14 @@ def plot_exchange_acceptance(result: ExchangeResult):
 
 def plot_energy_traces(
     result: ExchangeResult, beta_indices: Optional[list[int]] = None
-):
+) -> None:
     """Plot energy traces for given temperature indices."""
     if beta_indices is None:
         beta_indices = [0, len(result.beta) // 2, len(result.beta) - 1]
 
     plt.figure()
     for idx in beta_indices:
-        energies = result.energy_trace_by_temperature[idx]
+        energies = -result.log_likelihood_trace_by_temperature[idx]
         plt.plot(energies, label=f"beta={result.beta[idx]:.4f}")
 
     plt.xlabel("Step")

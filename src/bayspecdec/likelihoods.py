@@ -1,583 +1,144 @@
-import numpy as np
-from typing import Protocol, runtime_checkable, Optional
-from scipy.special import gammaln
-from typing import Optional
+"""
+likelihoods.py — Observation models ``(y, prediction) -> scalar`` for the JAX backend.
 
-Array = np.ndarray
+All are pure JAX, fully normalised and differentiable in ``prediction``, so they plug
+into ``make_spectral_model(likelihood=...)``.
+"""
 
+from __future__ import annotations
 
-@runtime_checkable
-class Likelihood(Protocol):
-    """
-    ``n_noise_params`` is the number of noise hyperparameters the likelihood reads from
-    ``context["noise"]`` (0 for a likelihood with fixed noise).
-    """
+import math
+from typing import Callable
 
-    n_noise_params: int
+import jax
+import jax.numpy as jnp
+from jax.scipy.special import gammaln
 
-    def log_prob(
-        self, y: Array, prediction: Array, context: Optional[dict] = None
-    ) -> float: ...
-
-    def energy(
-        self, y: Array, prediction: Array, context: Optional[dict] = None
-    ) -> float: ...
+Array = jax.Array
+_TINY = 1e-12
 
 
-class GaussianNoise:
-    """
-    Gaussian noise observation model.
-    y_i = f(x_i) + epsilon_i
-    epsilon_i ~ N(0, sigma2)
+def gaussian_log_likelihood(sigma2: float | Array) -> Callable[[Array, Array], Array]:
+    """Fully normalised Gaussian log-likelihood ``(y, prediction) -> scalar``."""
 
-    Pass a number for ``sigma2`` to keep the noise fixed, or ``sigma2=None`` to treat it as a
-    sampled hyperparameter: the likelihood then reads ``s = log sigma^2`` from
-    ``context["noise"][0]`` (``SpectralModel`` supplies it from the trailing block of ``theta``).
-    """
-
-    def __init__(self, sigma2: Optional[float] = None):
-        self.sigma2: Optional[float] = None if sigma2 is None else float(sigma2)
-        if self.sigma2 is not None and self.sigma2 <= 0.0:
-            raise ValueError("sigma2 must be positive")
-        self.n_noise_params: int = 0 if self.sigma2 is not None else 1
-
-    @property
-    def pref(self) -> float:
-        if self.sigma2 is None:
-            raise ValueError("pref is only defined for a fixed sigma2")
-        return 1 / np.sqrt(2 * np.pi * self.sigma2)
-
-    def _sigma2(self, context: Optional[dict]) -> float:
-        if self.sigma2 is not None:
-            return self.sigma2
-        if context is None or "noise" not in context:
-            raise ValueError(
-                "GaussianNoise(sigma2=None) needs context['noise'] = [log sigma^2]"
-            )
-        return float(np.exp(np.asarray(context["noise"], dtype=float).ravel()[0]))
-
-    def log_prob(
-        self, y: Array, prediction: Array, context: Optional[dict] = None
-    ) -> float:
-        """Fully normalized log-likelihood."""
-        sigma2 = self._sigma2(context)
-        residual: Array = y - prediction
-        return float(
-            -0.5 * residual.size * np.log(2.0 * np.pi * sigma2)
-            - 0.5 * np.sum(residual**2) / sigma2
+    def log_prob(y: Array, prediction: Array) -> Array:
+        residual = y - prediction
+        return (
+            -0.5 * residual.size * jnp.log(2.0 * jnp.pi * sigma2)
+            - 0.5 * jnp.sum(residual**2) / sigma2
         )
 
-    def energy(
-        self, y: Array, prediction: Array, context: Optional[dict] = None
-    ) -> float:
-        return -self.log_prob(y, prediction, context)
+    return log_prob
 
 
-class PoissonNoise:
-    n_noise_params = 0
+def gaussian_noise_likelihood() -> Callable[[Array, Array, Array], Array]:
     """
-    Poisson observation model.
-
-    y_i ~ Poisson(lambda_i)
-    where lambda_i = prediction_i.
-
-    Unlike the Gaussian noise model, there is no separate sigma2
-    parameter: the variance of y_i is equal to lambda_i.
+    Gaussian noise with a sampled variance: ``(y, prediction, s) -> scalar`` with
+    ``s = [log sigma^2]``. For ``make_spectral_model(noise_prior=...)``.
     """
 
-    def log_prob(
-        self,
-        y: Array,
-        prediction: Array,
-        context: Optional[dict] = None,
-    ) -> float:
-        """
-        Fully normalized Poisson log-likelihood.
+    def log_prob(y: Array, prediction: Array, s: Array) -> Array:
+        return gaussian_log_likelihood(jnp.exp(s[0]))(y, prediction)
 
-        log p(y | lambda)
-            = sum_i [
-                y_i * log(lambda_i)
-                - lambda_i
-                - log(y_i!)
-            ]
-        """
-
-        y = np.asarray(y)
-        prediction = np.asarray(prediction)
-
-        if np.any(y < 0) or np.any(prediction <= 0):
-            raise ValueError(
-                "Poisson observations must be non-negative and predictions positive."
-            )
-
-        if not np.all(y == np.round(y)):
-            raise ValueError("Poisson observations must be integers.")
-
-        log_likelihood = np.sum(y * np.log(prediction) - prediction - gammaln(y + 1.0))
-
-        return float(log_likelihood)
-
-    def energy(
-        self,
-        y: Array,
-        prediction: Array,
-        context: Optional[dict] = None,
-    ) -> float:
-        """
-        Normalized negative average log-likelihood.
-
-        This is the Poisson analogue of an energy/loss:
-
-            E(theta) = -(1/n) log p(y | theta)
-
-        so that
-
-            log p(y | theta) = -n * E(theta).
-
-        This definition is especially convenient for a generic
-        Bayesian/tempered inference framework.
-        """
-        n = y.size
-        return -self.log_prob(y, prediction, context) / n
+    return log_prob
 
 
-class PoissonGaussianNoise:
+def poisson_log_likelihood() -> Callable[[Array, Array], Array]:
     """
-    Poisson-Gaussian observation model.
+    ``y_i ~ Poisson(prediction_i)``: ``sum_i y_i log(lam_i) - lam_i - log(y_i!)``.
 
-    Latent count:
-        k_i ~ Poisson(prediction_i)
-
-    Readout:
-        y_i | k_i ~ N(k_i, sigma2)
-
-    Therefore:
-        p(y_i | prediction_i, sigma2)
-            = sum_k Poisson(k | prediction_i) N(y_i | k, sigma2)
-
-    The public interface evaluates the likelihood of a complete
-    spectrum in one call.
+    ``prediction`` is clamped to a tiny positive floor so the value and gradient stay
+    finite when the model dips to or below zero (the likelihood there is ~ -inf anyway).
     """
 
-    n_noise_params = 0
+    def log_prob(y: Array, prediction: Array) -> Array:
+        lam = jnp.maximum(prediction, _TINY)
+        return jnp.sum(y * jnp.log(lam) - lam - gammaln(y + 1.0))
 
-    def __init__(
-        self,
-        sigma2: float,
-        tol: float = 1e-12,
-        max_iterations: int = 100_000,
-    ):
-        if sigma2 <= 0:
-            raise ValueError("sigma2 must be strictly positive.")
+    return log_prob
 
-        if not 0.0 < tol < 1.0:
-            raise ValueError("tol must lie in (0, 1).")
 
-        if max_iterations <= 0:
-            raise ValueError("max_iterations must be positive.")
+def poisson_gaussian_log_likelihood(
+    sigma2: float, half_width: int = 12, gain: float = 1.0
+) -> Callable[[Array, Array], Array]:
+    """
+    Poisson counts read out with Gaussian noise::
 
-        self.sigma2: float = float(sigma2)
-        self.tol: float = float(tol)
-        self.max_iterations: int = int(max_iterations)
+        k_i ~ Poisson(lam_i),  y_i | k_i ~ N(gain * k_i, sigma2)
+        p(y_i) = sum_k Poisson(k | lam_i) N(y_i | gain * k, sigma2)
 
-        self._log_pref: float = -0.5 * np.log(2.0 * np.pi * self.sigma2)
+    ``prediction`` is the mean of ``y`` (``gain * lam``); ``sigma2`` is the readout variance in
+    the units of ``y``. ``gain`` is the detector gain (counts per detected event); with
+    ``gain=1`` the data are plain event counts. Then ``var(y) = gain * mean(y) + sigma2``.
 
-    @property
-    def pref(self) -> float:
-        return 1.0 / np.sqrt(2.0 * np.pi * self.sigma2)
+    Call it to get the likelihood: ``make_spectral_model(..., likelihood=poisson_gaussian_log_likelihood(sigma2))``.
 
-    def _log_ratio(
-        self,
-        k: np.typing.NDArray[np.integer],
-        log_lambda: Array,
-        y: Array,
-    ) -> Array:
-        """
-        log(a_{k+1} / a_k), where
-
-            a_k = Poisson(k | lambda) * N(y | k, sigma2)
-
-        The ratio is strictly decreasing with k.
-        """
-        k_float = np.asarray(k, dtype=float)
-
-        return log_lambda - np.log(k_float + 1.0) + (y - k_float - 0.5) / self.sigma2
-
-    def _find_modes(
-        self,
-        y: Array,
-        prediction: Array,
-    ) -> np.typing.NDArray[np.integer]:
-        """
-        Find the integer mode of the summand for every spectrum bin.
-
-        Because log(a_{k+1}/a_k) is strictly decreasing in k, the mode
-        can be found using bracketing followed by binary search.
-        """
-
-        n = y.size
-        modes = np.zeros(n, dtype=np.int64)
-
-        positive = prediction > 0.0
-
-        if not np.any(positive):
-            return modes
-
-        log_lambda = np.full(n, -np.inf, dtype=float)
-        log_lambda[positive] = np.log(prediction[positive])
-
-        # If a_1 <= a_0, then k=0 is the mode.
-        ratio0 = self._log_ratio(
-            np.zeros(n, dtype=np.int64),
-            log_lambda,
-            y,
+    The numpy class sums until a tolerance is met, which needs data-dependent loops. Here the
+    sum runs over a *fixed* window of ``2 * half_width + 1`` integers centred on the
+    summand's mode, so it is jittable and differentiable. In event units the summand is
+    approximately Gaussian in ``k`` with mean ``lam (s2 + y) / (s2 + lam)`` and standard
+    deviation ``s = sqrt(lam s2 / (lam + s2)) <= min(sqrt(lam), sqrt(s2))`` with
+    ``s2 = sigma2 / gain**2``, so the window covers ``+-half_width / s`` standard deviations.
+    Choose ``half_width >= 8 * sqrt(min(lam_max, s2))``; the default is exact to machine
+    precision when ``s <= 1`` and is far too narrow for a large readout noise, where
+    ``heteroscedastic_gaussian_log_likelihood`` is the cheaper (and, for large counts,
+    equally accurate) choice. The window centre is held constant under ``grad``.
+    """
+    if jnp.ndim(sigma2) != 0 or jnp.ndim(gain) != 0:
+        raise TypeError(
+            "sigma2 and gain must be scalars. This function returns the likelihood: pass "
+            "likelihood=poisson_gaussian_log_likelihood(sigma2), not the function itself"
         )
+    if sigma2 <= 0.0:
+        raise ValueError("sigma2 must be strictly positive")
+    if gain <= 0.0:
+        raise ValueError("gain must be strictly positive")
+    if half_width < 1:
+        raise ValueError("half_width must be >= 1")
+    s2 = float(sigma2) / float(gain) ** 2
+    log_gain = math.log(float(gain))
+    log_pref = -0.5 * math.log(2.0 * math.pi * s2)
+    offsets = jnp.arange(-half_width, half_width + 1, dtype=float)
 
-        needs_search = positive & (ratio0 > 0.0)
-
-        if not np.any(needs_search):
-            return modes
-
-        # ------------------------------------------------------------
-        # Bracket the mode.
-        #
-        # Find lo, hi such that:
-        #   log_ratio(lo) > 0
-        #   log_ratio(hi) <= 0
-        # ------------------------------------------------------------
-        lo = np.zeros(n, dtype=np.int64)
-        hi = np.zeros(n, dtype=np.int64)
-
-        hi[needs_search] = 1
-
-        active = needs_search.copy()
-
-        while np.any(active):
-            idx = np.flatnonzero(active)
-
-            ratio = self._log_ratio(
-                hi[idx],
-                log_lambda[idx],
-                y[idx],
-            )
-
-            still_positive = ratio > 0.0
-
-            hi_values = hi[idx]
-            hi_values[still_positive] = 2 * hi_values[still_positive] + 1
-            hi[idx] = hi_values
-
-            active[idx[~still_positive]] = False
-
-        # ------------------------------------------------------------
-        # Binary search for the first k with log_ratio(k) <= 0.
-        # ------------------------------------------------------------
-        active = needs_search.copy()
-
-        while np.any(active):
-            idx = np.flatnonzero(active)
-
-            unfinished = (hi[idx] - lo[idx]) > 1
-
-            if not np.any(unfinished):
-                active[idx] = False
-                continue
-
-            jj = idx[unfinished]
-
-            mid = (lo[jj] + hi[jj]) // 2
-
-            ratio = self._log_ratio(
-                mid,
-                log_lambda[jj],
-                y[jj],
-            )
-
-            positive_ratio = ratio > 0.0
-
-            lo_jj = lo[jj]
-            hi_jj = hi[jj]
-
-            lo_jj[positive_ratio] = mid[positive_ratio]
-            hi_jj[~positive_ratio] = mid[~positive_ratio]
-
-            lo[jj] = lo_jj
-            hi[jj] = hi_jj
-
-            active[idx] = (hi[idx] - lo[idx]) > 1
-
-        modes[needs_search] = hi[needs_search]
-
-        return modes
-
-    @staticmethod
-    def _log_geometric_tail(
-        log_a: Array,
-        log_q: Array,
-    ) -> Array:
-        """
-        Upper bound
-
-            a * q / (1-q)
-
-        in log space, assuming q < 1.
-        """
-
-        result = np.full_like(log_a, np.inf, dtype=float)
-
-        valid = log_q < 0.0
-
-        if np.any(valid):
-            lq = log_q[valid]
-
-            # log(1 - exp(lq)), evaluated stably.
-            log_one_minus_q = np.log(-np.expm1(lq))
-
-            result[valid] = log_a[valid] + lq - log_one_minus_q
-
-        return result
-
-    def log_prob(
-        self,
-        y: Array,
-        prediction: Array,
-        context: Optional[dict] = None,
-    ) -> float:
-        """
-        Fully normalized log-likelihood of the complete spectrum.
-
-        Parameters
-        ----------
-        y:
-            Observed spectrum.
-
-        prediction:
-            Poisson mean f(x_i; theta) for each bin.
-
-        context:
-            Optional extra information. Currently unused.
-
-        Returns
-        -------
-        float
-            Sum_i log p(y_i | prediction_i, sigma2).
-        """
-
-        y = np.asarray(y, dtype=float)
-        prediction = np.asarray(prediction, dtype=float)
-
-        if y.shape != prediction.shape:
-            raise ValueError("y and prediction must have the same shape.")
-
-        if not np.all(np.isfinite(y)):
-            raise ValueError("y contains non-finite values.")
-
-        if not np.all(np.isfinite(prediction)):
-            raise ValueError("prediction contains non-finite values.")
-
-        if np.any(prediction < 0.0):
-            raise ValueError(
-                "prediction must be non-negative because it is a Poisson mean."
-            )
-
-        # Flatten the spectrum. The original shape is irrelevant for
-        # the independent-bin likelihood.
-        y = y.ravel()
-        prediction = prediction.ravel()
-
-        n = y.size
-
-        positive = prediction > 0.0
-
-        log_lambda = np.full(n, -np.inf, dtype=float)
-        log_lambda[positive] = np.log(prediction[positive])
-
-        # ------------------------------------------------------------
-        # Find the mode of each Poisson-Gaussian summand.
-        # ------------------------------------------------------------
-        k_mode = self._find_modes(y, prediction)
-
-        k = k_mode.copy()
-
-        # ------------------------------------------------------------
-        # log(a_k) at the mode
-        #
-        # log a_k =
-        #   k log(lambda)
-        #   - lambda
-        #   - log Gamma(k+1)
-        #   + log Gaussian prefactor
-        #   - (y-k)^2/(2 sigma2)
-        # ------------------------------------------------------------
-        log_a = np.empty(n, dtype=float)
-
-        zero_lambda = ~positive
-
-        # If lambda=0, only k=0 contributes.
-        log_a[zero_lambda] = self._log_pref - y[zero_lambda] ** 2 / (2.0 * self.sigma2)
-
-        log_a[positive] = (
-            k[positive] * log_lambda[positive]
-            - prediction[positive]
-            - gammaln(k[positive] + 1.0)
-            + self._log_pref
-            - (y[positive] - k[positive]) ** 2 / (2.0 * self.sigma2)
+    def log_prob(y: Array, prediction: Array) -> Array:
+        y = y / gain  # event units
+        lam = jnp.maximum(prediction / gain, _TINY)
+        centre = jax.lax.stop_gradient(
+            jnp.maximum(jnp.round(lam * (s2 + y) / (s2 + lam)), 0.0)
         )
-
-        # log of the currently retained sum
-        log_sum = log_a.copy()
-
-        # ============================================================
-        # RIGHT TAIL
-        # ============================================================
-
-        active = positive.copy()
-        log_tail_tolerance = np.log(self.tol / 2.0)
-
-        iteration = 0
-
-        while np.any(active):
-            iteration += 1
-
-            if iteration > self.max_iterations:
-                raise RuntimeError(
-                    "Maximum right-tail iterations exceeded. "
-                    "Increase max_iterations or inspect the input."
-                )
-
-            idx = np.flatnonzero(active)
-
-            current_k = k[idx]
-
-            log_q = self._log_ratio(
-                current_k,
-                log_lambda[idx],
-                y[idx],
-            )
-
-            # Upper bound on omitted right tail.
-            log_tail = self._log_geometric_tail(
-                log_a[idx],
-                log_q,
-            )
-
-            converged = log_tail <= log_sum[idx] + log_tail_tolerance
-
-            active[idx[converged]] = False
-
-            not_converged = idx[~converged]
-
-            if not_converged.size:
-                log_q_next = self._log_ratio(
-                    k[not_converged],
-                    log_lambda[not_converged],
-                    y[not_converged],
-                )
-
-                k[not_converged] += 1
-                log_a[not_converged] += log_q_next
-
-                # Stable:
-                # log(exp(a) + exp(b))
-                log_sum[not_converged] = np.logaddexp(
-                    log_sum[not_converged],
-                    log_a[not_converged],
-                )
-
-        # ------------------------------------------------------------
-        # Reset k/log_a to the mode before expanding left.
-        #
-        # log_sum intentionally retains all right-side contributions.
-        # ------------------------------------------------------------
-        k = k_mode.copy()
-
-        log_a = np.empty(n, dtype=float)
-
-        log_a[zero_lambda] = self._log_pref - y[zero_lambda] ** 2 / (2.0 * self.sigma2)
-
-        log_a[positive] = (
-            k[positive] * log_lambda[positive]
-            - prediction[positive]
-            - gammaln(k[positive] + 1.0)
-            + self._log_pref
-            - (y[positive] - k[positive]) ** 2 / (2.0 * self.sigma2)
+        # Keep the whole window non-negative: shift it up if it would cross k = 0.
+        start = jnp.maximum(centre - half_width, 0.0)
+        k = start[..., None] + (offsets + half_width)  # (..., 2h+1)
+        yb, lb = y[..., None], lam[..., None]
+        log_a = (
+            k * jnp.log(lb)
+            - lb
+            - gammaln(k + 1.0)
+            + log_pref
+            - (yb - k) ** 2 / (2.0 * s2)
         )
+        # Density of y = density of y / gain, divided by gain.
+        return jnp.sum(jax.scipy.special.logsumexp(log_a, axis=-1)) - y.size * log_gain
 
-        # ============================================================
-        # LEFT TAIL
-        # ============================================================
+    return log_prob
 
-        active = positive & (k > 0)
 
-        iteration = 0
+def heteroscedastic_gaussian_log_likelihood(
+    read_var: float, gain: float = 1.0
+) -> Callable[[Array, Array], Array]:
+    """
+    Gaussian approximation of Poisson + readout noise: ``y_i ~ N(pred_i, gain * pred_i + read_var)``.
 
-        while np.any(active):
-            iteration += 1
+    This is the large-count limit of ``poisson_gaussian_log_likelihood(read_var, gain=gain)``
+    (it matches the mean and variance), costs one term per bin instead of ``2 * half_width + 1``,
+    and is the usual choice for detector data with hundreds of counts or more. The variance is
+    part of the density, so the gradient includes its dependence on the prediction.
+    """
+    if read_var <= 0.0 or gain <= 0.0:
+        raise ValueError("read_var and gain must be strictly positive")
 
-            if iteration > self.max_iterations:
-                raise RuntimeError(
-                    "Maximum left-tail iterations exceeded. "
-                    "Increase max_iterations or inspect the input."
-                )
+    def log_prob(y: Array, prediction: Array) -> Array:
+        var = gain * jnp.maximum(prediction, 0.0) + read_var
+        return -0.5 * jnp.sum(jnp.log(2.0 * jnp.pi * var) + (y - prediction) ** 2 / var)
 
-            idx = np.flatnonzero(active)
-
-            # a_{k-1} / a_k = 1 / r_{k-1}
-            log_q = -self._log_ratio(
-                k[idx] - 1,
-                log_lambda[idx],
-                y[idx],
-            )
-
-            # Upper bound on omitted left tail.
-            log_tail = self._log_geometric_tail(
-                log_a[idx],
-                log_q,
-            )
-
-            converged = log_tail <= log_sum[idx] + log_tail_tolerance
-
-            active[idx[converged]] = False
-
-            not_converged = idx[~converged]
-
-            if not_converged.size:
-                log_ratio_previous = self._log_ratio(
-                    k[not_converged] - 1,
-                    log_lambda[not_converged],
-                    y[not_converged],
-                )
-
-                k[not_converged] -= 1
-
-                # log a_{k-1} = log a_k - log r_{k-1}
-                log_a[not_converged] -= log_ratio_previous
-
-                log_sum[not_converged] = np.logaddexp(
-                    log_sum[not_converged],
-                    log_a[not_converged],
-                )
-
-                # At k=0 there is no remaining left tail.
-                reached_zero = k[not_converged] == 0
-                active[not_converged[reached_zero]] = False
-
-        # ------------------------------------------------------------
-        # log_sum[i] is now the truncated marginal log likelihood
-        # for each individual spectrum bin.
-        #
-        # The full-spectrum log likelihood is the sum because bins
-        # are conditionally independent.
-        # ------------------------------------------------------------
-        return float(np.sum(log_sum))
-
-    def energy(
-        self,
-        y: Array,
-        prediction: Array,
-        context: Optional[dict] = None,
-    ) -> float:
-        """
-        Negative log-likelihood of the complete spectrum.
-        """
-        return -self.log_prob(y, prediction, context)
+    return log_prob

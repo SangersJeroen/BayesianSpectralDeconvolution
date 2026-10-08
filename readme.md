@@ -16,3 +16,11 @@ https://doi.org/10.1016/j.neunet.2011.12.001.
 Abstract: An analytical method to deconvolute spectral data into a number of simple bands is extremely important in the analysis of the chemical properties of matter. However, there are two fundamental problems with such deconvolution methods. One is how to determine the number of bands without resorting to heuristics. The other is difficulty in avoiding the parameter solution trapped into local minima due to the hierarchy and the nonlinearity of the system. In this study, we propose a novel method of spectral deconvolution based on Bayesian estimation with the exchange Monte Carlo method, which is an application of the integral approximation of stochastic complexity and the exchange Monte Carlo method. We also experimentally show its effectiveness on synthetic data and on reflectance spectral data of olivine, one of the most common minerals of terrestrial planets.
 Keywords: Spectroanalysis; Spectral deconvolution; Exchange Monte Carlo method; Bayesian estimation
 
+
+## Usage
+
+The package is JAX-only (autodiff HMC/NUTS/RWM within batched exchange Monte Carlo). See
+[`USAGE.md`](USAGE.md) for a quickstart, custom bases, priors, background functions and sampled
+noise, and `notebooks/examples/HMC_example.py` for a complete model-selection run.
+Install with `pip install -e .` (add extras as needed: `.[plots]` for matplotlib diagnostics,
+`.[datagen]` for the numba spectrum generator, `.[test]` to run `pytest`).

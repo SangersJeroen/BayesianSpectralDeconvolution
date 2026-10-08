@@ -1,5 +1,3 @@
-from .basis import GaussianBasis
-
 import numpy as np
 
 Array = np.ndarray
@@ -28,10 +26,8 @@ def make_paper_like_synthetic_data(
     else:
         x = np.arange(0.0, 3.0 + 1e-12, 0.01)
 
-    basis = GaussianBasis()
-    params = np.stack([PAPER_CENTERS, PAPER_B])
-    basis_eval = basis.evaluate(x, params)
-    y_true = PAPER_AMPLITUDES @ basis_eval
+    bands = np.exp(-0.5 * PAPER_B[:, None] * (x[None, :] - PAPER_CENTERS[:, None]) ** 2)
+    y_true = PAPER_AMPLITUDES @ bands
 
     rng = np.random.default_rng(seed)
     y = y_true + rng.normal(0.0, np.sqrt(sigma2), size=x.size)
