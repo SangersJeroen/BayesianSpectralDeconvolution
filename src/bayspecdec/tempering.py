@@ -25,11 +25,23 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.typing as npt
 
 from .model import JaxModel
 from .nuts import nuts_transition
 
 Array = jax.Array
+
+# One chain's transition result: ``(z, ll, lp, accept_prob, accepted)``.
+StepOutput = tuple[Array, Array, Array, Array, Array]
+# Dual-averaging state: ``(log_eps, log_eps_bar, h_bar, t, mu)``, each with a leading chain axis except ``t``.
+DualAveraging = tuple[Array, Array, Array, Array, Array]
+# Running variance per chain: ``(count, mean, m2)``.
+Welford = tuple[Array, Array, Array]
+# Scan carry: ``(key, z, ll, lp, da, inv_m, welford, swap_attempts, swap_accepts)``.
+Carry = tuple[Array, Array, Array, Array, DualAveraging, Array, Welford, Array, Array]
+# Leapfrog scan state: ``(z, p, grad, ((U, (ll, lp))))``.
+LeapState = tuple[Array, Array, Array, tuple[Array, tuple[Array, Array]]]
 
 
 @dataclass
@@ -90,18 +102,26 @@ class PTConfig:
     da_t0: float = 10.0
     da_kappa: float = 0.75
 
-    def __post_init__(self):
+    @property
+    def accept_target(self) -> float:
+        """``target_accept`` with the kernel-dependent default resolved."""
+        assert self.target_accept is not None  # filled in by __post_init__
+        return self.target_accept
+
+    def __post_init__(self) -> None:
         if self.kernel not in ("hmc", "nuts", "rwm"):
             raise ValueError("kernel must be 'hmc', 'nuts' or 'rwm'")
-        if self.target_accept is None:
-            object.__setattr__(self, "target_accept", 0.234 if self.kernel == "rwm" else 0.8)
+        target = self.target_accept
+        if target is None:
+            target = 0.234 if self.kernel == "rwm" else 0.8
+            object.__setattr__(self, "target_accept", target)
         if self.max_tree_depth < 1:
             raise ValueError("max_tree_depth must be >= 1")
         if self.num_leapfrog < 1:
             raise ValueError("num_leapfrog must be >= 1")
         if self.init_step_size <= 0.0:
             raise ValueError("init_step_size must be positive")
-        if not (0.0 < self.target_accept < 1.0):
+        if not (0.0 < target < 1.0):
             raise ValueError("target_accept must be in (0, 1)")
         if self.swap_every < 1:
             raise ValueError("swap_every must be >= 1")
@@ -142,9 +162,9 @@ class JaxParallelTempering:
     def __init__(
         self,
         model: JaxModel,
-        betas,
+        betas: npt.ArrayLike,
         config: Optional[PTConfig] = None,
-        inverse_mass: Optional[Array] = None,
+        inverse_mass: Optional[npt.ArrayLike] = None,
     ):
         self.model = model
         self.betas = jnp.asarray(betas, dtype=float)
@@ -169,13 +189,15 @@ class JaxParallelTempering:
         lp = self.model.log_prior(theta) + self.model.transform.log_jac(z)
         return ll, lp
 
-    def _potential(self, z: Array, beta: Array):
+    def _potential(self, z: Array, beta: Array) -> tuple[Array, tuple[Array, Array]]:
         ll, lp = self._parts(z)
         return -(beta * ll + lp), (ll, lp)
 
     # -- one HMC transition for one chain ---------------------------------------
 
-    def _hmc_step(self, key, z, ll, lp, beta, eps, inv_m):
+    def _hmc_step(
+        self, key: Array, z: Array, ll: Array, lp: Array, beta: Array, eps: Array, inv_m: Array
+    ) -> StepOutput:
         cfg = self.config
         vg = jax.value_and_grad(self._potential, has_aux=True)
 
@@ -187,7 +209,7 @@ class JaxParallelTempering:
         (_, _), g0 = vg(z, beta)
         p = p0 - 0.5 * eps * g0
 
-        def body(carry, _):
+        def body(carry: LeapState, _: None) -> tuple[LeapState, None]:
             z, p, _g, _out = carry
             z = z + eps * inv_m * p
             out, g = vg(z, beta)
@@ -212,14 +234,18 @@ class JaxParallelTempering:
             accept,
         )
 
-    def _nuts_step(self, key, z, ll, lp, beta, eps, inv_m):
+    def _nuts_step(
+        self, key: Array, z: Array, ll: Array, lp: Array, beta: Array, eps: Array, inv_m: Array
+    ) -> StepOutput:
         cfg = self.config
         vg = jax.value_and_grad(self._potential, has_aux=True)
         return nuts_transition(
             vg, key, z, ll, lp, beta, eps, inv_m, cfg.max_tree_depth, cfg.max_energy_error
         )
 
-    def _rwm_step(self, key, z, ll, lp, beta, eps, inv_m):
+    def _rwm_step(
+        self, key: Array, z: Array, ll: Array, lp: Array, beta: Array, eps: Array, inv_m: Array
+    ) -> StepOutput:
         k_prop, k_acc = jax.random.split(key)
         z1 = z + eps * jnp.sqrt(inv_m) * jax.random.normal(k_prop, z.shape)
         ll1, lp1 = self._parts(z1)
@@ -237,7 +263,9 @@ class JaxParallelTempering:
 
     # -- replica exchange -------------------------------------------------------
 
-    def _swap(self, key, z, ll, lp, parity):
+    def _swap(
+        self, key: Array, z: Array, ll: Array, lp: Array, parity: Array | int
+    ) -> tuple[Array, Array, Array, Array, Array]:
         L, betas = self.L, self.betas
         idx = jnp.arange(L - 1)
         # log v = (beta_{l+1} - beta_l) (ll_l - ll_{l+1}), as in the numpy sampler.
@@ -252,7 +280,7 @@ class JaxParallelTempering:
 
     # -- adaptation (vectorised over chains) ------------------------------------------
 
-    def _da_init(self, log_eps: Array):
+    def _da_init(self, log_eps: Array) -> DualAveraging:
         """Fresh dual-averaging state centred on ``log_eps`` (shape ``(L,)``)."""
         return (
             log_eps,
@@ -262,22 +290,22 @@ class JaxParallelTempering:
             jnp.log(10.0) + log_eps,
         )
 
-    def _da_update(self, da, alpha):
+    def _da_update(self, da: DualAveraging, alpha: Array) -> DualAveraging:
         cfg = self.config
         log_eps, log_eps_bar, h_bar, t, mu = da
         eta = 1.0 / (t + cfg.da_t0)
-        h_bar = (1.0 - eta) * h_bar + eta * (cfg.target_accept - alpha)
+        h_bar = (1.0 - eta) * h_bar + eta * (cfg.accept_target - alpha)
         log_eps = mu - (jnp.sqrt(t) / cfg.da_gamma) * h_bar
         eta_bar = t ** (-cfg.da_kappa)
         log_eps_bar = eta_bar * log_eps + (1.0 - eta_bar) * log_eps_bar
         return (log_eps, log_eps_bar, h_bar, t + 1.0, mu)
 
-    def _welford_init(self):
+    def _welford_init(self) -> Welford:
         d = self.model.ndim
         return (jnp.asarray(0.0), jnp.zeros((self.L, d)), jnp.zeros((self.L, d)))
 
     @staticmethod
-    def _welford_update(w, z, take):
+    def _welford_update(w: Welford, z: Array, take: Array) -> Welford:
         n, mean, m2 = w
         n_new = n + 1.0
         delta = z - mean
@@ -291,7 +319,9 @@ class JaxParallelTempering:
 
     # -- full run -------------------------------------------------------------------
 
-    def _iteration(self, carry, xs, adapt: bool):
+    def _iteration(
+        self, carry: Carry, xs: tuple[Array, Array, Array], adapt: bool
+    ) -> tuple[Carry, tuple[Array, Array, Array]]:
         t, accumulate, window_end = xs
         key, z, ll, lp, da, inv_m, welford, ex_att, ex_acc = carry
         key, k_hmc, k_swap = jax.random.split(key, 3)
@@ -336,7 +366,15 @@ class JaxParallelTempering:
         carry = (key, z, ll, lp, da, inv_m, welford, ex_att, ex_acc)
         return carry, (z, ll, accepted)
 
-    def _run_impl(self, key, z0, accumulate, window_end, burn_in: int, samples: int):
+    def _run_impl(
+        self,
+        key: Array,
+        z0: Array,
+        accumulate: Array,
+        window_end: Array,
+        burn_in: int,
+        samples: int,
+    ) -> tuple[Array, Array, Array, Array, Array, Array, Array]:
         L = self.L
         ll0, lp0 = jax.vmap(self._parts)(z0)
         da = self._da_init(jnp.full(L, jnp.log(self.config.init_step_size)))

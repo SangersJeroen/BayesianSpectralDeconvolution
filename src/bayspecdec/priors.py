@@ -14,7 +14,7 @@ All methods are pure JAX, so they can be jitted and differentiated.
 from __future__ import annotations
 
 import math
-from typing import Optional, Protocol, runtime_checkable, Sequence
+from typing import Optional, Protocol, Sequence, Union, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -23,7 +23,7 @@ import numpy as np
 Array = jax.Array
 
 
-def _log_expm1(x):
+def _log_expm1(x: Array) -> Array:
     # Stable log(exp(x) - 1) for x > 0
     return jnp.where(x <= 1.0, jnp.log(jnp.expm1(x)), x + jnp.log1p(-jnp.exp(-x)))
 
@@ -36,6 +36,10 @@ class JaxPrior(Protocol):
     def log_prob(self, x: Array) -> Array: ...
 
     def sample(self, key: Array, shape: tuple[int, ...]) -> Array: ...
+
+
+PriorSpec = Union[JaxPrior, tuple[float, float]]
+"""A prior object, or a ``(lower, upper)`` tuple meaning uniform."""
 
 
 class UniformPrior:
@@ -78,7 +82,11 @@ class GammaPrior:
         if shape <= 0.0:
             raise ValueError("shape must be positive")
         self.shape = float(shape)
-        self.rate = float(rate) if rate is not None else 1.0 / float(scale)
+        if rate is not None:
+            self.rate = float(rate)
+        else:
+            assert scale is not None  # exactly one of rate / scale was given
+            self.rate = 1.0 / float(scale)
         if self.rate <= 0.0:
             raise ValueError("rate/scale must be positive")
         self._log_norm = self.shape * math.log(self.rate) - math.lgamma(self.shape)
@@ -133,7 +141,7 @@ class FermiDiracPrior:
         u = 1.0 - jax.random.uniform(key, shape=shape)
         return self.mu - self.temperature * _log_expm1(u * L)
 
-    def log_prob(self, x):
+    def log_prob(self, x: Array) -> Array:
         z = (x - self.mu) / self.temperature
         out = -jnp.log(self.temperature) - self.log_L - jnp.logaddexp(0.0, z)
         return jnp.where(x < 0, -np.inf, out)
@@ -161,7 +169,7 @@ def log_scale_prior(lower: float, upper: float) -> UniformPrior:
     return UniformPrior(math.log(lower), math.log(upper))
 
 
-def as_prior(spec) -> JaxPrior:
+def as_prior(spec: PriorSpec) -> JaxPrior:
     """Accept a prior object or a ``(lower, upper)`` tuple (shorthand for uniform)."""
     if isinstance(spec, JaxPrior):
         return spec

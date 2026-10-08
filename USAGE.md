@@ -76,7 +76,7 @@ peaks, bg, noise = model.split_background(theta)
 ```
 
 Ready-made: `arctan_step_background`, `constant_background`, `polynomial_background(degree)`. For a custom
-function set `fn.n_params` so the prior count is checked.
+function wrap it with `bsd.with_n_params(fn, m)` so the prior count is checked.
 
 ## Noise
 

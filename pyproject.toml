@@ -18,10 +18,22 @@ dependencies = [
 plots = ["matplotlib"]  # bayspecdec.diagnostics
 datagen = ["numba"]  # bayspecdec.spectrum_gen
 test = ["pytest", "numba"]
-all = ["bayspecdec[plots,datagen,test]"]
+typecheck = ["mypy", "ty", "scipy-stubs", "matplotlib", "numba"]
+all = ["bayspecdec[plots,datagen,test,typecheck]"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+bayspecdec = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+mypy_path = "src"
+files = ["src/bayspecdec"]
+
+[tool.ty.src]
+include = ["src", "tests"]

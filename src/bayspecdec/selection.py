@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 import numpy as np
+import numpy.typing as npt
 
 from .evidence import EvidenceEstimate, estimate_evidence
 from .model import JaxModel
@@ -29,7 +30,7 @@ class JaxModelRun:
 def select_model_size(
     model_factory: Callable[[int], JaxModel],
     K_values: Sequence[int],
-    betas,
+    betas: npt.ArrayLike,
     burn_in: int = 2_000,
     samples: int = 2_000,
     seed: int = 1234,

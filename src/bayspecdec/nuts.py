@@ -17,13 +17,47 @@ metric are the same.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TypedDict
+
 import jax
 import jax.numpy as jnp
 
 Array = jax.Array
 
+# ``vg(z, beta) -> ((U, (ll, lp)), dU/dz)``: value-and-grad of the potential with the likelihood and
+# prior as auxiliary outputs.
+ValueAndGrad = Callable[[Array, Array], tuple[tuple[Array, tuple[Array, Array]], Array]]
+# Phase-space edge ``(z, r, grad U)`` and a proposal ``(z, ll, lp)``.
+Edge = tuple[Array, Array, Array]
+Proposal = tuple[Array, Array, Array]
 
-def _leaf_idx_to_ckpt_idxs(n):
+
+class Subtree(TypedDict):
+    last: Edge
+    prop: Proposal
+    logw: Array
+    r_sum: Array
+    n: Array
+    acc: Array
+    turning: Array
+    diverging: Array
+
+
+class Tree(TypedDict):
+    left: Edge
+    right: Edge
+    prop: Proposal
+    logw: Array
+    r_sum: Array
+    n: Array
+    acc: Array
+    turning: Array
+    diverging: Array
+    depth: Array
+
+
+def _leaf_idx_to_ckpt_idxs(n: Array) -> tuple[Array, Array]:
     """Checkpoint slots ``[idx_min, idx_max]`` to test after adding 0-based leaf ``n``."""
     idx_max = jax.lax.population_count(n >> 1)
     num_subtrees = jax.lax.population_count((~n & (n + 1)) - 1)
@@ -31,8 +65,8 @@ def _leaf_idx_to_ckpt_idxs(n):
 
 
 def nuts_transition(
-    vg,
-    key,
+    vg: ValueAndGrad,
+    key: Array,
     z: Array,
     ll: Array,
     lp: Array,
@@ -41,7 +75,7 @@ def nuts_transition(
     inv_m: Array,
     max_depth: int,
     max_energy_error: float,
-):
+) -> tuple[Array, Array, Array, Array, Array]:
     """
     One NUTS transition. ``vg(z, beta) -> ((U, (ll, lp)), dU/dz)`` is the value-and-grad of
     the potential. Returns ``(z, ll, lp, mean_accept_prob, moved)``.
@@ -49,10 +83,10 @@ def nuts_transition(
     d = z.shape[0]
     i32 = jnp.int32
 
-    def kinetic(r):
+    def kinetic(r: Array) -> Array:
         return 0.5 * jnp.sum(inv_m * r**2)
 
-    def turning(r_a, r_b, rho):
+    def turning(r_a: Array, r_b: Array, rho: Array) -> Array:
         return (jnp.dot(inv_m * r_a, rho) <= 0.0) | (jnp.dot(inv_m * r_b, rho) <= 0.0)
 
     key, k_mom = jax.random.split(key)
@@ -60,7 +94,9 @@ def nuts_transition(
     (U0, _), g0 = vg(z, beta)
     H0 = U0 + kinetic(r0)
 
-    def new_leaf(zc, rc, gc, going_right):
+    def new_leaf(
+        zc: Array, rc: Array, gc: Array, going_right: Array
+    ) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array]:
         e = jnp.where(going_right, eps, -eps)
         r = rc - 0.5 * e * gc
         zn = zc + e * inv_m * r
@@ -75,11 +111,14 @@ def nuts_transition(
 
     # -- build a subtree of 2**depth leaves, starting next to the edge (z_e, r_e, g_e) -----
 
-    def build_subtree(depth, z_e, r_e, g_e, going_right, key):
+    def build_subtree(
+        depth: Array, edge: Edge, going_right: Array, key: Array
+    ) -> Subtree:
+        z_e, r_e, g_e = edge
         n_max = jnp.left_shift(i32(1), depth.astype(i32))
 
-        sub0 = dict(
-            last=(z_e, r_e, g_e),
+        sub0 = Subtree(
+            last=edge,
             prop=(z_e, ll, lp),
             logw=jnp.asarray(-jnp.inf),
             r_sum=jnp.zeros(d),
@@ -90,11 +129,13 @@ def nuts_transition(
         )
         state0 = (sub0, key, jnp.zeros((max_depth, d)), jnp.zeros((max_depth, d)))
 
-        def cond(state):
+        State = tuple[Subtree, Array, Array, Array]
+
+        def cond(state: State) -> Array:
             sub = state[0]
             return (sub["n"] < n_max) & ~sub["turning"] & ~sub["diverging"]
 
-        def body(state):
+        def body(state: State) -> State:
             sub, key, r_ck, rs_ck = state
             key, k_pick = jax.random.split(key)
             zn, rn, gn, ll_n, lp_n, logw, acc, div = new_leaf(*sub["last"], going_right)
@@ -112,18 +153,18 @@ def nuts_transition(
             r_ck = jnp.where(even, r_ck.at[idx_max].set(rn), r_ck)
             rs_ck = jnp.where(even, rs_ck.at[idx_max].set(r_sum), rs_ck)
 
-            def tcond(s):
+            def tcond(s: tuple[Array, Array]) -> Array:
                 i, t = s
                 return (i >= idx_min) & ~t
 
-            def tbody(s):
+            def tbody(s: tuple[Array, Array]) -> tuple[Array, Array]:
                 i, _ = s
                 rho = r_sum - rs_ck[i] + r_ck[i]
                 return i - 1, turning(r_ck[i], rn, rho)
 
             _, is_turn = jax.lax.while_loop(tcond, tbody, (idx_max, jnp.asarray(False)))
 
-            sub = dict(
+            sub = Subtree(
                 last=(zn, rn, gn),
                 prop=prop,
                 logw=logw_tot,
@@ -139,7 +180,7 @@ def nuts_transition(
 
     # -- repeatedly double the trajectory ---------------------------------------------------
 
-    tree0 = dict(
+    tree0 = Tree(
         left=(z, r0, g0),
         right=(z, r0, g0),
         prop=(z, ll, lp),
@@ -152,18 +193,18 @@ def nuts_transition(
         depth=i32(0),
     )
 
-    def cond(carry):
+    def cond(carry: tuple[Tree, Array]) -> Array:
         tree = carry[0]
         return (tree["depth"] < max_depth) & ~tree["turning"] & ~tree["diverging"]
 
-    def body(carry):
+    def body(carry: tuple[Tree, Array]) -> tuple[Tree, Array]:
         tree, key = carry
         key, k_dir, k_sub, k_acc = jax.random.split(key, 4)
         going_right = jax.random.bernoulli(k_dir)
-        edge = jax.tree_util.tree_map(
+        edge: Edge = jax.tree_util.tree_map(
             lambda a, b: jnp.where(going_right, a, b), tree["right"], tree["left"]
         )
-        sub = build_subtree(tree["depth"], *edge, going_right, k_sub)
+        sub = build_subtree(tree["depth"], edge, going_right, k_sub)
 
         ok = ~sub["turning"] & ~sub["diverging"]
         p = jnp.exp(jnp.minimum(0.0, sub["logw"] - tree["logw"]))
@@ -180,7 +221,7 @@ def nuts_transition(
             lambda a, b: jnp.where(going_right, a, b), sub_edge, tree["right"]
         )
         r_sum = tree["r_sum"] + sub["r_sum"]
-        tree = dict(
+        tree = Tree(
             left=left,
             right=right,
             prop=prop,

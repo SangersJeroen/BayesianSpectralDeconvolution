@@ -4,6 +4,7 @@ import pytest
 jax = pytest.importorskip("jax")
 import jax.numpy as jnp  # noqa: E402
 from scipy import stats  # noqa: E402
+from scipy.special import logsumexp  # noqa: E402
 
 from bayspecdec import (  # noqa: E402
     BoxTransform,
@@ -43,7 +44,7 @@ def test_gaussian_log_likelihood_matches_scipy():
     rng = np.random.default_rng(0)
     y, pred = rng.normal(size=50), rng.normal(size=50)
     ours = gaussian_log_likelihood(0.3)(jnp.asarray(y), jnp.asarray(pred))
-    ref = stats.norm.logpdf(y, loc=pred, scale=np.sqrt(0.3)).sum()
+    ref = np.sum(stats.norm.logpdf(y, loc=pred, scale=np.sqrt(0.3)))
     np.testing.assert_allclose(ours, ref, rtol=1e-10)
 
 
@@ -331,7 +332,7 @@ def test_poisson_log_likelihood_matches_scipy_and_has_finite_gradient():
     lam = rng.uniform(0.5, 20.0, size=40)
     y = rng.poisson(lam).astype(float)
     ll = poisson_log_likelihood()
-    np.testing.assert_allclose(ll(jnp.asarray(y), jnp.asarray(lam)), stats.poisson.logpmf(y, lam).sum())
+    np.testing.assert_allclose(ll(jnp.asarray(y), jnp.asarray(lam)), np.sum(stats.poisson.logpmf(y, lam)))
     grad = jax.grad(lambda p: ll(jnp.asarray(y), p))(jnp.asarray(lam - 5.0))  # some lam < 0
     assert np.all(np.isfinite(grad))
 
@@ -346,7 +347,7 @@ def test_poisson_gaussian_matches_brute_force_sum(sigma2, lam_max):
     ours = poisson_gaussian_log_likelihood(sigma2, half_width=25)(jnp.asarray(y), jnp.asarray(lam))
     k = np.arange(0, 200)[:, None]
     terms = stats.poisson.logpmf(k, lam[None, :]) + stats.norm.logpdf(y[None, :], loc=k, scale=np.sqrt(sigma2))
-    ref = np.sum(np.logaddexp.reduce(terms, axis=0))
+    ref = np.sum(logsumexp(terms, axis=0))
     np.testing.assert_allclose(ours, ref, rtol=1e-8)
 
 
@@ -517,7 +518,7 @@ def test_poisson_gaussian_gives_clear_error_when_passed_uncalled():
     from bayspecdec import poisson_gaussian_log_likelihood
 
     with pytest.raises(TypeError, match="returns the likelihood"):
-        poisson_gaussian_log_likelihood(jnp.ones(3))
+        poisson_gaussian_log_likelihood(jnp.ones(3))  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     with pytest.raises(ValueError):
         poisson_gaussian_log_likelihood(1.0, gain=0.0)
 
@@ -583,7 +584,7 @@ def test_sampled_noise_layout_split_and_validation():
     with pytest.raises(ValueError):
         make_spectral_model(x, y, lorentz_basis, 1, (0.5, 5.0), [(1.0, 5.0)], sigma2=0.1, noise_prior=log_scale_prior(1e-6, 1.0))
     with pytest.raises(ValueError):
-        make_spectral_model(x, y, lorentz_basis, 1, (0.5, 5.0), [(1.0, 5.0)], noise_likelihood=lambda y, p, s: 0.0)
+        make_spectral_model(x, y, lorentz_basis, 1, (0.5, 5.0), [(1.0, 5.0)], noise_likelihood=lambda y, p, s: 0.0)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     with pytest.raises(ValueError):
         make_spectral_model(x, y, lorentz_basis, 1, (0.5, 5.0), [(1.0, 5.0)])
 

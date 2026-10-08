@@ -18,7 +18,7 @@ Array = jax.Array
 _TINY = 1e-12
 
 
-def gaussian_log_likelihood(sigma2: float) -> Callable[[Array, Array], Array]:
+def gaussian_log_likelihood(sigma2: float | Array) -> Callable[[Array, Array], Array]:
     """Fully normalised Gaussian log-likelihood ``(y, prediction) -> scalar``."""
 
     def log_prob(y: Array, prediction: Array) -> Array:

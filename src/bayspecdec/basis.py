@@ -17,4 +17,5 @@ def gaussian_basis(x: Array, params: Array) -> Array:
 def lorentzian_basis(x: Array, params: Array) -> Array:
     """``1 / (1 + ((x - mu) / gamma)^2)``; ``params = (mu, gamma)`` of shape ``(2, K)``."""
     mu, gamma = params
-    return 1.0 / (1.0 + ((x[None, :] - mu[:, None]) / gamma[:, None]) ** 2)
+    out: Array = 1.0 / (1.0 + ((x[None, :] - mu[:, None]) / gamma[:, None]) ** 2)
+    return out
