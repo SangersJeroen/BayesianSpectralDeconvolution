@@ -101,6 +101,8 @@ class JaxModel:
         Unconstrained reparameterisation.
     sample_prior:
         ``key -> theta`` draw used to initialise the chains.
+    predict:
+        ``theta -> (n,)`` noiseless model spectrum (optional; set by ``make_spectral_model``).
     """
 
     ndim: int
@@ -111,6 +113,7 @@ class JaxModel:
     K: Optional[int] = None
     n_noise: int = 0
     n_background: int = 0
+    predict: Optional[Callable[[Array], Array]] = None
 
     def split(self, theta: Array) -> tuple[Array, Array]:
         """``theta -> (physical parameters, noise hyperparameters)`` along the last axis."""
@@ -274,6 +277,6 @@ def make_spectral_model(
         K=K,
         n_noise=n_noise,
         n_background=n_bg,
+        predict=predict,
     )
-    model.predict = predict  # type: ignore[attr-defined]
     return model

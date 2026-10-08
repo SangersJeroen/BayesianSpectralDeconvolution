@@ -5,7 +5,7 @@ jax = pytest.importorskip("jax")
 import jax.numpy as jnp  # noqa: E402
 from scipy import stats  # noqa: E402
 
-from bayspecdec.jax_backend import (  # noqa: E402
+from bayspecdec import (  # noqa: E402
     BoxTransform,
     GammaPrior,
     UniformPrior,
@@ -17,7 +17,7 @@ from bayspecdec.jax_backend import (  # noqa: E402
     select_model_size,
 )
 from bayspecdec.evidence import estimate_evidence  # noqa: E402
-from bayspecdec.jax_backend.tempering import warmup_schedule  # noqa: E402
+from bayspecdec.tempering import warmup_schedule  # noqa: E402
 
 
 def lorentz_basis(x, params):
@@ -129,7 +129,7 @@ def test_pt_recovers_analytic_evidence_and_posterior():
     pt = JaxParallelTempering(model, betas, PTConfig(swap_every=5))
     result = pt.run(burn_in=500, samples=2000, seed=3)
 
-    log_z = estimate_evidence(None, result).log_z
+    log_z = estimate_evidence(result).log_z
     assert abs(log_z - (-d * np.log(10.0))) < 0.3
 
     post = result.samples_by_temperature[-1]
@@ -245,7 +245,7 @@ def test_pt_with_gamma_prior_recovers_analytic_evidence():
     pt = JaxParallelTempering(model, betas, PTConfig(swap_every=5))
     result = pt.run(burn_in=500, samples=3000, seed=5)
 
-    assert abs(estimate_evidence(None, result).log_z - d * a * np.log(b / (b + c))) < 0.15
+    assert abs(estimate_evidence(result).log_z - d * a * np.log(b / (b + c))) < 0.15
     post = result.samples_by_temperature[-1]
     np.testing.assert_allclose(post.mean(axis=0), a / (b + c), rtol=0.1)
 
@@ -309,7 +309,7 @@ def test_mass_adaptation_learns_scales_and_improves_mixing():
     assert pt1.final_step_sizes[-1] > 10 * pt0.final_step_sizes[-1]
     assert ac1 < ac0 - 0.5
     np.testing.assert_allclose(res1.samples_by_temperature[-1].std(axis=0), stds, rtol=0.2)
-    assert abs(estimate_evidence(None, res1).log_z - (-3 * np.log(100.0))) < 0.4
+    assert abs(estimate_evidence(res1).log_z - (-3 * np.log(100.0))) < 0.4
 
 
 def test_user_supplied_initial_inverse_mass_is_used_when_adaptation_off():
@@ -325,7 +325,7 @@ def test_user_supplied_initial_inverse_mass_is_used_when_adaptation_off():
 
 
 def test_poisson_log_likelihood_matches_scipy_and_has_finite_gradient():
-    from bayspecdec.jax_backend import poisson_log_likelihood
+    from bayspecdec import poisson_log_likelihood
 
     rng = np.random.default_rng(0)
     lam = rng.uniform(0.5, 20.0, size=40)
@@ -337,20 +337,21 @@ def test_poisson_log_likelihood_matches_scipy_and_has_finite_gradient():
 
 
 @pytest.mark.parametrize("sigma2, lam_max", [(1e-4, 30.0), (0.5, 10.0), (4.0, 30.0)])
-def test_poisson_gaussian_matches_numpy_implementation(sigma2, lam_max):
-    from bayspecdec.jax_backend import poisson_gaussian_log_likelihood
-    from bayspecdec.likelihoods import PoissonGaussianNoise
+def test_poisson_gaussian_matches_brute_force_sum(sigma2, lam_max):
+    from bayspecdec import poisson_gaussian_log_likelihood
 
     rng = np.random.default_rng(1)
     lam = np.concatenate([[0.0, 1e-3], rng.uniform(0.0, lam_max, size=30)])
     y = rng.poisson(lam) + rng.normal(0.0, np.sqrt(sigma2), size=lam.size)
     ours = poisson_gaussian_log_likelihood(sigma2, half_width=25)(jnp.asarray(y), jnp.asarray(lam))
-    ref = PoissonGaussianNoise(sigma2).log_prob(y, lam)
+    k = np.arange(0, 200)[:, None]
+    terms = stats.poisson.logpmf(k, lam[None, :]) + stats.norm.logpdf(y[None, :], loc=k, scale=np.sqrt(sigma2))
+    ref = np.sum(np.logaddexp.reduce(terms, axis=0))
     np.testing.assert_allclose(ours, ref, rtol=1e-8)
 
 
 def test_poisson_gaussian_gradient_matches_finite_differences():
-    from bayspecdec.jax_backend import poisson_gaussian_log_likelihood
+    from bayspecdec import poisson_gaussian_log_likelihood
 
     rng = np.random.default_rng(2)
     lam = jnp.asarray(rng.uniform(1.0, 8.0, size=10))
@@ -363,7 +364,7 @@ def test_poisson_gaussian_gradient_matches_finite_differences():
 
 
 def test_poisson_gaussian_rejects_bad_arguments():
-    from bayspecdec.jax_backend import poisson_gaussian_log_likelihood
+    from bayspecdec import poisson_gaussian_log_likelihood
 
     with pytest.raises(ValueError):
         poisson_gaussian_log_likelihood(0.0)
@@ -375,7 +376,7 @@ def test_poisson_gaussian_rejects_bad_arguments():
 
 
 def test_normal_prior_matches_scipy_and_samples():
-    from bayspecdec.jax_backend import NormalPrior
+    from bayspecdec import NormalPrior
 
     p = NormalPrior(1.5, 5.0)
     x = np.linspace(-10, 10, 21)
@@ -386,19 +387,23 @@ def test_normal_prior_matches_scipy_and_samples():
         NormalPrior(0.0, 0.0)
 
 
-def test_basis_functions_match_numpy_versions():
-    from bayspecdec.basis import GaussianBasis, LorentzianBasis
-    from bayspecdec.jax_backend import gaussian_basis, lorentzian_basis
+def test_basis_functions_match_closed_form():
+    from bayspecdec import gaussian_basis, lorentzian_basis
 
     x = np.linspace(0, 3, 31)
-    params = np.array([[1.0, 2.0], [50.0, 100.0]])
-    np.testing.assert_allclose(gaussian_basis(jnp.asarray(x), jnp.asarray(params)), GaussianBasis().evaluate(x, params))
-    np.testing.assert_allclose(lorentzian_basis(jnp.asarray(x), jnp.asarray(params)), LorentzianBasis().evaluate(x, params))
+    mu, w = np.array([1.0, 2.0]), np.array([50.0, 100.0])
+    params = jnp.asarray(np.stack([mu, w]))
+    np.testing.assert_allclose(
+        gaussian_basis(jnp.asarray(x), params), np.exp(-0.5 * w[:, None] * (x[None] - mu[:, None]) ** 2)
+    )
+    np.testing.assert_allclose(
+        lorentzian_basis(jnp.asarray(x), params), 1 / (1 + ((x[None] - mu[:, None]) / w[:, None]) ** 2)
+    )
 
 
 def test_paper_synthetic_model_runs_with_normal_and_gamma_priors():
     from bayspecdec.data import make_paper_like_synthetic_data
-    from bayspecdec.jax_backend import gaussian_basis, paper_synthetic_priors
+    from bayspecdec import gaussian_basis, paper_synthetic_priors
 
     x, y, _ = make_paper_like_synthetic_data()
     amp, basis = paper_synthetic_priors()
@@ -419,7 +424,7 @@ def test_nuts_recovers_analytic_evidence_and_posterior():
     pt = JaxParallelTempering(_gauss_model(d), _BETAS, PTConfig(kernel="nuts", swap_every=5))
     result = pt.run(burn_in=500, samples=1500, seed=3)
 
-    assert abs(estimate_evidence(None, result).log_z - (-d * np.log(10.0))) < 0.3
+    assert abs(estimate_evidence(result).log_z - (-d * np.log(10.0))) < 0.3
     post = result.samples_by_temperature[-1]
     assert np.all(np.abs(post.mean(axis=0)) < 0.1)
     np.testing.assert_allclose(post.std(axis=0), 0.5, atol=0.07)
@@ -456,7 +461,7 @@ def test_rwm_recovers_analytic_evidence_and_posterior():
     pt = JaxParallelTempering(_gauss_model(d), _BETAS, PTConfig(kernel="rwm", swap_every=2))
     result = pt.run(burn_in=2000, samples=10000, seed=4)
 
-    assert abs(estimate_evidence(None, result).log_z - (-d * np.log(10.0))) < 0.4
+    assert abs(estimate_evidence(result).log_z - (-d * np.log(10.0))) < 0.4
     post = result.samples_by_temperature[-1]
     np.testing.assert_allclose(post.std(axis=0), 0.5, atol=0.1)
     assert 0.1 < result.within_acceptance[-1] < 0.6  # dual averaging aims at 0.234
@@ -476,7 +481,7 @@ def test_kernel_config_validation_and_defaults():
 
 
 def test_spectral_model_with_poisson_gaussian_likelihood_runs_under_nuts():
-    from bayspecdec.jax_backend import poisson_gaussian_log_likelihood
+    from bayspecdec import poisson_gaussian_log_likelihood
 
     x = np.linspace(0, 6, 40)
     truth = 10.0 * 0.5 / ((x - 3.0) ** 2 + 0.5)
@@ -493,7 +498,7 @@ def test_spectral_model_with_poisson_gaussian_likelihood_runs_under_nuts():
 
 def test_poisson_gaussian_with_gain_matches_direct_sum():
     from scipy.special import logsumexp
-    from bayspecdec.jax_backend import poisson_gaussian_log_likelihood
+    from bayspecdec import poisson_gaussian_log_likelihood
 
     rng = np.random.default_rng(3)
     gain, sigma2 = 4.0, 25.0
@@ -509,7 +514,7 @@ def test_poisson_gaussian_with_gain_matches_direct_sum():
 
 
 def test_poisson_gaussian_gives_clear_error_when_passed_uncalled():
-    from bayspecdec.jax_backend import poisson_gaussian_log_likelihood
+    from bayspecdec import poisson_gaussian_log_likelihood
 
     with pytest.raises(TypeError, match="returns the likelihood"):
         poisson_gaussian_log_likelihood(jnp.ones(3))
@@ -518,7 +523,7 @@ def test_poisson_gaussian_gives_clear_error_when_passed_uncalled():
 
 
 def test_heteroscedastic_gaussian_approximates_poisson_gaussian_at_large_counts():
-    from bayspecdec.jax_backend import (
+    from bayspecdec import (
         heteroscedastic_gaussian_log_likelihood,
         poisson_gaussian_log_likelihood,
     )
@@ -539,7 +544,7 @@ def test_heteroscedastic_gaussian_approximates_poisson_gaussian_at_large_counts(
 
 def test_fermi_dirac_prior_is_normalised_and_sampler_matches():
     from scipy.integrate import quad
-    from bayspecdec.jax_backend import FermiDiracPrior
+    from bayspecdec import FermiDiracPrior
 
     p = FermiDiracPrior(mu=1.0, temperature=0.2)
     total = quad(lambda x: float(np.exp(p.log_prob(jnp.asarray(x)))), 0.0, 40.0, points=[1.0])[0]
@@ -559,7 +564,7 @@ def _noisy_lorentz_data(sigma2, n=200, seed=0):
 
 
 def test_sampled_noise_layout_split_and_validation():
-    from bayspecdec.jax_backend import log_scale_prior
+    from bayspecdec import log_scale_prior
 
     x, y = _noisy_lorentz_data(0.01, n=20)
     m = make_spectral_model(
@@ -593,7 +598,7 @@ def test_fixed_noise_models_are_unchanged_by_the_noise_machinery():
 
 @pytest.mark.parametrize("kernel", ["hmc", "nuts"])
 def test_sampled_sigma2_is_recovered_and_amplitude_agrees_with_fixed_noise(kernel):
-    from bayspecdec.jax_backend import log_scale_prior
+    from bayspecdec import log_scale_prior
 
     true_s2 = 0.04
     x, y = _noisy_lorentz_data(true_s2, n=300)
@@ -613,7 +618,7 @@ def test_sampled_sigma2_is_recovered_and_amplitude_agrees_with_fixed_noise(kerne
 
 
 def test_sampled_noise_gives_comparable_evidence_across_K():
-    from bayspecdec.jax_backend import log_scale_prior
+    from bayspecdec import log_scale_prior
 
     x, y = _noisy_lorentz_data(0.01, n=150)
 
@@ -634,7 +639,7 @@ def test_sampled_noise_gives_comparable_evidence_across_K():
 
 
 def test_arctan_step_background_matches_paper_formula():
-    from bayspecdec.jax_backend import arctan_step_background
+    from bayspecdec import arctan_step_background
 
     x = np.linspace(520.0, 590.0, 50)
     H, E0, G, A, dE, w = 0.8, 535.0, 2.0, 0.6, 3.0, 4.0
@@ -646,7 +651,7 @@ def test_arctan_step_background_matches_paper_formula():
 
 
 def test_polynomial_background_matches_numpy():
-    from bayspecdec.jax_backend import polynomial_background
+    from bayspecdec import polynomial_background
 
     x = np.linspace(-1.0, 2.0, 11)
     c = np.array([0.5, -1.0, 2.0])
@@ -656,7 +661,7 @@ def test_polynomial_background_matches_numpy():
 
 
 def test_background_layout_predict_prior_and_gradient():
-    from bayspecdec.jax_backend import log_scale_prior, polynomial_background
+    from bayspecdec import log_scale_prior, polynomial_background
 
     x, y = _noisy_lorentz_data(0.01, n=20)
     bg = polynomial_background(1)
@@ -686,7 +691,7 @@ def test_background_layout_predict_prior_and_gradient():
 
 
 def test_background_argument_validation():
-    from bayspecdec.jax_backend import arctan_step_background, constant_background
+    from bayspecdec import arctan_step_background, constant_background
 
     x, y = _noisy_lorentz_data(0.01, n=20)
     args = (x, y, lorentz_basis, 1, (0.5, 5.0), [(1.0, 5.0)])
@@ -699,7 +704,7 @@ def test_background_argument_validation():
 
 
 def test_pt_recovers_step_height_alongside_a_peak():
-    from bayspecdec.jax_backend import arctan_step_background
+    from bayspecdec import arctan_step_background
 
     rng = np.random.default_rng(3)
     sigma2 = 0.0025

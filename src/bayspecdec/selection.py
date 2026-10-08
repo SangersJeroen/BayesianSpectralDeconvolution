@@ -1,4 +1,4 @@
-"""selection.py — Model-size selection driver for the JAX backend."""
+"""selection.py — Model-size selection driver."""
 
 from __future__ import annotations
 
@@ -8,10 +8,9 @@ from typing import Callable, Optional, Sequence
 
 import numpy as np
 
-from ..evidence import EvidenceEstimate, estimate_evidence
-from ..tempering import ExchangeResult
+from .evidence import EvidenceEstimate, estimate_evidence
 from .model import JaxModel
-from .tempering import JaxParallelTempering, PTConfig
+from .tempering import ExchangeResult, JaxParallelTempering, PTConfig
 
 
 @dataclass
@@ -49,7 +48,7 @@ def select_model_size(
         result = sampler.run(burn_in=burn_in, samples=samples, seed=child_seed)
         elapsed = time.perf_counter() - t0
 
-        evidence = estimate_evidence(None, result)  # model is unused by the estimator
+        evidence = estimate_evidence(result)
         runs.append(JaxModelRun(K, model, result, evidence, elapsed))
 
         if verbose:

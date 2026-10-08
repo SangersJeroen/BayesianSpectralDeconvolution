@@ -24,7 +24,7 @@ def plot_energy_traces(
 
     plt.figure()
     for idx in beta_indices:
-        energies = result.energy_trace_by_temperature[idx]
+        energies = -result.log_likelihood_trace_by_temperature[idx]
         plt.plot(energies, label=f"beta={result.beta[idx]:.4f}")
 
     plt.xlabel("Step")
