@@ -18,7 +18,7 @@ dependencies = [
 plots = ["matplotlib"]  # bayspecdec.diagnostics
 datagen = ["numba"]  # bayspecdec.spectrum_gen
 test = ["pytest", "numba"]
-typecheck = ["mypy", "ty", "scipy-stubs", "matplotlib", "numba"]
+typecheck = ["mypy", "ty", "scipy-stubs", "matplotlib", "numba", "pytest"]
 all = ["bayspecdec[plots,datagen,test,typecheck]"]
 
 [tool.setuptools.packages.find]
