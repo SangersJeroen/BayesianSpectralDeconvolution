@@ -184,7 +184,9 @@ def make_spectral_model(
     sampled = noise_prior is not None
     if sampled:
         if sigma2 is not None or likelihood is not None:
-            raise ValueError("Sampled noise: do not pass sigma2 or likelihood, use noise_likelihood")
+            raise ValueError(
+                "Sampled noise: do not pass sigma2 or likelihood, use noise_likelihood"
+            )
         noise_priors = (
             [as_prior(p) for p in noise_prior]
             if isinstance(noise_prior, (list, tuple))
@@ -193,13 +195,17 @@ def make_spectral_model(
         )
         if noise_likelihood is None:
             if len(noise_priors) != 1:
-                raise ValueError("Give noise_likelihood when sampling more than one noise parameter")
+                raise ValueError(
+                    "Give noise_likelihood when sampling more than one noise parameter"
+                )
             noise_likelihood = gaussian_noise_likelihood()
     else:
         if noise_likelihood is not None:
             raise ValueError("noise_likelihood needs a noise_prior")
         if (sigma2 is None) == (likelihood is None):
-            raise ValueError("Pass exactly one of sigma2 or likelihood, or a noise_prior")
+            raise ValueError(
+                "Pass exactly one of sigma2 or likelihood, or a noise_prior"
+            )
         if likelihood is None:
             likelihood = gaussian_log_likelihood(sigma2)
         noise_priors = []
@@ -264,8 +270,13 @@ def make_spectral_model(
     def sample_prior(key: Array) -> Array:
         keys = jax.random.split(key, n_blocks + n_bg + n_noise)
         parts = [p.sample(k, (K,)) for p, k in zip(priors, keys)]
-        parts += [p.sample(k, (1,)) for p, k in zip(bg_priors, keys[n_blocks : n_blocks + n_bg])]
-        parts += [p.sample(k, (1,)) for p, k in zip(noise_priors, keys[n_blocks + n_bg :])]
+        parts += [
+            p.sample(k, (1,))
+            for p, k in zip(bg_priors, keys[n_blocks : n_blocks + n_bg])
+        ]
+        parts += [
+            p.sample(k, (1,)) for p, k in zip(noise_priors, keys[n_blocks + n_bg :])
+        ]
         return jnp.concatenate(parts)
 
     model = JaxModel(

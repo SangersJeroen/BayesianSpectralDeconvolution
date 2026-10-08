@@ -23,9 +23,10 @@ def gaussian_log_likelihood(sigma2: float) -> Callable[[Array, Array], Array]:
 
     def log_prob(y: Array, prediction: Array) -> Array:
         residual = y - prediction
-        return -0.5 * residual.size * jnp.log(2.0 * jnp.pi * sigma2) - 0.5 * jnp.sum(
-            residual**2
-        ) / sigma2
+        return (
+            -0.5 * residual.size * jnp.log(2.0 * jnp.pi * sigma2)
+            - 0.5 * jnp.sum(residual**2) / sigma2
+        )
 
     return log_prob
 
@@ -102,12 +103,20 @@ def poisson_gaussian_log_likelihood(
     def log_prob(y: Array, prediction: Array) -> Array:
         y = y / gain  # event units
         lam = jnp.maximum(prediction / gain, _TINY)
-        centre = jax.lax.stop_gradient(jnp.maximum(jnp.round(lam * (s2 + y) / (s2 + lam)), 0.0))
+        centre = jax.lax.stop_gradient(
+            jnp.maximum(jnp.round(lam * (s2 + y) / (s2 + lam)), 0.0)
+        )
         # Keep the whole window non-negative: shift it up if it would cross k = 0.
         start = jnp.maximum(centre - half_width, 0.0)
         k = start[..., None] + (offsets + half_width)  # (..., 2h+1)
         yb, lb = y[..., None], lam[..., None]
-        log_a = k * jnp.log(lb) - lb - gammaln(k + 1.0) + log_pref - (yb - k) ** 2 / (2.0 * s2)
+        log_a = (
+            k * jnp.log(lb)
+            - lb
+            - gammaln(k + 1.0)
+            + log_pref
+            - (yb - k) ** 2 / (2.0 * s2)
+        )
         # Density of y = density of y / gain, divided by gain.
         return jnp.sum(jax.scipy.special.logsumexp(log_a, axis=-1)) - y.size * log_gain
 

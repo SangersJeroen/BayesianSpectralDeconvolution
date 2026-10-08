@@ -94,7 +94,9 @@ class PTConfig:
         if self.kernel not in ("hmc", "nuts", "rwm"):
             raise ValueError("kernel must be 'hmc', 'nuts' or 'rwm'")
         if self.target_accept is None:
-            object.__setattr__(self, "target_accept", 0.234 if self.kernel == "rwm" else 0.8)
+            object.__setattr__(
+                self, "target_accept", 0.234 if self.kernel == "rwm" else 0.8
+            )
         if self.max_tree_depth < 1:
             raise ValueError("max_tree_depth must be >= 1")
         if self.num_leapfrog < 1:
@@ -216,7 +218,16 @@ class JaxParallelTempering:
         cfg = self.config
         vg = jax.value_and_grad(self._potential, has_aux=True)
         return nuts_transition(
-            vg, key, z, ll, lp, beta, eps, inv_m, cfg.max_tree_depth, cfg.max_energy_error
+            vg,
+            key,
+            z,
+            ll,
+            lp,
+            beta,
+            eps,
+            inv_m,
+            cfg.max_tree_depth,
+            cfg.max_energy_error,
         )
 
     def _rwm_step(self, key, z, ll, lp, beta, eps, inv_m):
@@ -243,7 +254,9 @@ class JaxParallelTempering:
         # log v = (beta_{l+1} - beta_l) (ll_l - ll_{l+1}), as in the numpy sampler.
         log_v = (betas[1:] - betas[:-1]) * (ll[:-1] - ll[1:])
         active = (idx % 2) == parity
-        accept = active & (jnp.log(jax.random.uniform(key, (L - 1,))) < jnp.minimum(0.0, log_v))
+        accept = active & (
+            jnp.log(jax.random.uniform(key, (L - 1,))) < jnp.minimum(0.0, log_v)
+        )
         # Out-of-range index L is dropped, so only accepted pairs write to ``perm``.
         perm = jnp.arange(L)
         perm = perm.at[jnp.where(accept, idx, L)].set(idx + 1, mode="drop")
@@ -311,7 +324,9 @@ class JaxParallelTempering:
             # End of a slow window: variance -> metric, restart step-size adaptation.
             n, _, m2 = welford
             var = m2 / jnp.maximum(n - 1.0, 1.0)
-            var = (n / (n + 5.0)) * var + 1e-3 * (5.0 / (n + 5.0))  # shrink, as Stan does
+            var = (n / (n + 5.0)) * var + 1e-3 * (
+                5.0 / (n + 5.0)
+            )  # shrink, as Stan does
             inv_m = jnp.where(window_end, var, inv_m)
             da = jax.tree_util.tree_map(
                 lambda fresh, old: jnp.where(window_end, fresh, old),
