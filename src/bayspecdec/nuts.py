@@ -144,7 +144,9 @@ def nuts_transition(
             p = jnp.where(jnp.isfinite(logw_tot), jnp.exp(logw - logw_tot), 0.0)
             take = jax.random.uniform(k_pick) < p
             prop = jax.tree_util.tree_map(
-                lambda new, old: jnp.where(take, new, old), (zn, ll_n, lp_n), sub["prop"]
+                lambda new, old: jnp.where(take, new, old),
+                (zn, ll_n, lp_n),
+                sub["prop"],
             )
             r_sum = sub["r_sum"] + rn
 

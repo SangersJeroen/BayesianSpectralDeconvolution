@@ -25,7 +25,9 @@ class EvidenceEstimate:
     ratio_standard_errors: Array
 
 
-def estimate_evidence(result: ExchangeResult, verbose: bool = False) -> EvidenceEstimate:
+def estimate_evidence(
+    result: ExchangeResult, verbose: bool = False
+) -> EvidenceEstimate:
     """
     Estimate log Z(1) from the temperature ratios (Nagata et al. 2012).
 
@@ -38,21 +40,30 @@ def estimate_evidence(result: ExchangeResult, verbose: bool = False) -> Evidence
     Each ratio's relative standard error assumes independent samples.
     """
     if result.beta.size < 2:
-        raise ValueError("At least two beta values are required for evidence estimation.")
+        raise ValueError(
+            "At least two beta values are required for evidence estimation."
+        )
     if len(result.log_likelihood_trace_by_temperature) != result.beta.size:
-        raise ValueError("Number of likelihood traces must match number of beta values.")
+        raise ValueError(
+            "Number of likelihood traces must match number of beta values."
+        )
 
     log_ratios = []
     standard_errors = []
 
     for l in range(result.beta.size - 1):
         delta_beta = result.beta[l + 1] - result.beta[l]
-        log_likelihoods = np.asarray(result.log_likelihood_trace_by_temperature[l], dtype=float)
+        log_likelihoods = np.asarray(
+            result.log_likelihood_trace_by_temperature[l], dtype=float
+        )
 
         if log_likelihoods.size == 0:
             raise ValueError(f"No samples available for beta index {l}.")
         if np.any(np.isposinf(log_likelihoods)) or np.any(np.isnan(log_likelihoods)):
-            warnings.warn(f"Infinite or NaN log-likelihood values at beta index {l}.", RuntimeWarning)
+            warnings.warn(
+                f"Infinite or NaN log-likelihood values at beta index {l}.",
+                RuntimeWarning,
+            )
 
         log_w = delta_beta * log_likelihoods  # log of the importance weights
         log_ratio = logmeanexp(log_w)

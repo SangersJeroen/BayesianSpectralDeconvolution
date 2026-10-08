@@ -29,7 +29,9 @@ class BackgroundFunction(Protocol):
     def __call__(self, x: Array, params: Array) -> Array: ...
 
 
-def with_n_params(fn: Callable[[Array, Array], Array], n_params: int) -> BackgroundFunction:
+def with_n_params(
+    fn: Callable[[Array, Array], Array], n_params: int
+) -> BackgroundFunction:
     """Attach ``n_params`` to a plain ``(x, params) -> (n,)`` function (use it for custom backgrounds)."""
     setattr(fn, "n_params", n_params)
     return cast(BackgroundFunction, fn)
