@@ -110,11 +110,18 @@ class JaxModel:
     sample_prior: Callable[[Array], Array]
     K: Optional[int] = None
     n_noise: int = 0
+    n_background: int = 0
 
     def split(self, theta: Array) -> tuple[Array, Array]:
         """``theta -> (physical parameters, noise hyperparameters)`` along the last axis."""
         cut = self.ndim - self.n_noise
         return theta[..., :cut], theta[..., cut:]
+
+    def split_background(self, theta: Array) -> tuple[Array, Array, Array]:
+        """``theta -> (peak parameters, background parameters, noise hyperparameters)``."""
+        phys, noise = self.split(theta)
+        cut = phys.shape[-1] - self.n_background
+        return phys[..., :cut], phys[..., cut:], noise
 
     def log_posterior(self, theta: Array) -> Array:
         return self.log_likelihood(theta) + self.log_prior(theta)
@@ -136,6 +143,8 @@ def make_spectral_model(
     likelihood: Optional[Callable[[Array, Array], Array]] = None,
     noise_prior=None,
     noise_likelihood: Optional[Callable[[Array, Array, Array], Array]] = None,
+    background_fn: Optional[Callable[[Array, Array], Array]] = None,
+    background_priors: Optional[Sequence] = None,
 ) -> JaxModel:
     """
     ``y ~ sum_k a_k * basis_fn(x, params)[k]`` with independent priors per parameter block.
@@ -145,6 +154,16 @@ def make_spectral_model(
     the noise is sampled. Each block shares one prior, given as a ``UniformPrior`` /
     ``GammaPrior`` / ... (or any ``JaxPrior``) or a ``(lower, upper)`` tuple meaning uniform.
     ``basis_fn`` receives the basis blocks stacked as ``(n_basis_params, K)`` and returns ``(K, n)``.
+
+    An optional **background** is added to the peaks: pass ``background_fn(x, params) -> (n,)`` and one
+    prior per entry of ``params`` in ``background_priors`` (see ``background.py`` for ready-made
+    functions, e.g. ``arctan_step_background`` with six priors). Its parameters sit between the
+    basis blocks and the noise hyperparameters::
+
+        [a_1..a_K, p1_1..p1_K, ..., b_1..b_m, s_1..s_m']
+
+    ``model.split`` still returns ``(everything but noise, noise)``; use ``model.split_background``
+    to also separate the ``m`` background parameters.
 
     Noise is either **fixed** or **sampled**; choose with the arguments (exactly one mode):
 
@@ -182,17 +201,36 @@ def make_spectral_model(
             likelihood = gaussian_log_likelihood(sigma2)
         noise_priors = []
 
+    if (background_fn is None) != (background_priors is None):
+        raise ValueError("Pass background_fn and background_priors together")
+    bg_priors = [as_prior(p) for p in (background_priors or [])]
+    n_bg = len(bg_priors)
+    if background_fn is not None:
+        expected = getattr(background_fn, "n_params", n_bg)
+        if n_bg == 0 or n_bg != expected:
+            raise ValueError(
+                f"background_fn takes {expected} parameters but {n_bg} background_priors were given"
+            )
+
     priors = [as_prior(amplitude_prior)] + [as_prior(p) for p in basis_priors]
     n_blocks = len(priors)
-    n_phys = n_blocks * K
+    n_peak = n_blocks * K
+    n_phys = n_peak + n_bg
     n_noise = len(noise_priors)
-    all_priors = priors + noise_priors
     transform = BoxTransform(
         np.concatenate(
-            [np.repeat([p.lower for p in priors], K), [p.lower for p in noise_priors]]
+            [
+                np.repeat([p.lower for p in priors], K),
+                [p.lower for p in bg_priors],
+                [p.lower for p in noise_priors],
+            ]
         ),
         np.concatenate(
-            [np.repeat([p.upper for p in priors], K), [p.upper for p in noise_priors]]
+            [
+                np.repeat([p.upper for p in priors], K),
+                [p.upper for p in bg_priors],
+                [p.upper for p in noise_priors],
+            ]
         ),
     )
 
@@ -200,8 +238,11 @@ def make_spectral_model(
     yj = jnp.asarray(y, dtype=float)
 
     def predict(theta: Array) -> Array:
-        blocks = theta[:n_phys].reshape(n_blocks, K)
-        return blocks[0] @ basis_fn(xj, blocks[1:])
+        blocks = theta[:n_peak].reshape(n_blocks, K)
+        pred = blocks[0] @ basis_fn(xj, blocks[1:])
+        if background_fn is not None:
+            pred = pred + background_fn(xj, theta[n_peak:n_phys])
+        return pred
 
     def log_likelihood(theta: Array) -> Array:
         if sampled:
@@ -209,16 +250,19 @@ def make_spectral_model(
         return likelihood(yj, predict(theta))
 
     def log_prior(theta: Array) -> Array:
-        blocks = theta[:n_phys].reshape(n_blocks, K)
+        blocks = theta[:n_peak].reshape(n_blocks, K)
         total = sum(jnp.sum(p.log_prob(blocks[i])) for i, p in enumerate(priors))
+        for j, p in enumerate(bg_priors):
+            total = total + jnp.sum(p.log_prob(theta[n_peak + j]))
         for j, p in enumerate(noise_priors):
             total = total + jnp.sum(p.log_prob(theta[n_phys + j]))
         return total
 
     def sample_prior(key: Array) -> Array:
-        keys = jax.random.split(key, n_blocks + n_noise)
+        keys = jax.random.split(key, n_blocks + n_bg + n_noise)
         parts = [p.sample(k, (K,)) for p, k in zip(priors, keys)]
-        parts += [p.sample(k, (1,)) for p, k in zip(noise_priors, keys[n_blocks:])]
+        parts += [p.sample(k, (1,)) for p, k in zip(bg_priors, keys[n_blocks : n_blocks + n_bg])]
+        parts += [p.sample(k, (1,)) for p, k in zip(noise_priors, keys[n_blocks + n_bg :])]
         return jnp.concatenate(parts)
 
     model = JaxModel(
@@ -229,6 +273,7 @@ def make_spectral_model(
         sample_prior=sample_prior,
         K=K,
         n_noise=n_noise,
+        n_background=n_bg,
     )
     model.predict = predict  # type: ignore[attr-defined]
     return model

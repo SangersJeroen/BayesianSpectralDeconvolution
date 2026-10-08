@@ -628,3 +628,99 @@ def test_sampled_noise_gives_comparable_evidence_across_K():
     )
     assert np.all(np.isfinite([r.stochastic_complexity for r in runs]))
     assert min(runs, key=lambda r: r.stochastic_complexity).K == 1  # data hold exactly one peak
+
+
+# --- background --------------------------------------------------------------------------------
+
+
+def test_arctan_step_background_matches_paper_formula():
+    from bayspecdec.jax_backend import arctan_step_background
+
+    x = np.linspace(520.0, 590.0, 50)
+    H, E0, G, A, dE, w = 0.8, 535.0, 2.0, 0.6, 3.0, 4.0
+    ref = H * (0.5 + np.arctan((x - E0) / (G / 2)) / np.pi) + A * np.exp(
+        -4 * np.log(2) * ((x - (E0 + dE)) / w) ** 2
+    )
+    got = arctan_step_background(jnp.asarray(x), jnp.array([H, E0, G, A, dE, w]))
+    np.testing.assert_allclose(np.asarray(got), ref, rtol=1e-12)
+
+
+def test_polynomial_background_matches_numpy():
+    from bayspecdec.jax_backend import polynomial_background
+
+    x = np.linspace(-1.0, 2.0, 11)
+    c = np.array([0.5, -1.0, 2.0])
+    np.testing.assert_allclose(
+        np.asarray(polynomial_background(2)(jnp.asarray(x), jnp.asarray(c))), np.polynomial.polynomial.polyval(x, c)
+    )
+
+
+def test_background_layout_predict_prior_and_gradient():
+    from bayspecdec.jax_backend import log_scale_prior, polynomial_background
+
+    x, y = _noisy_lorentz_data(0.01, n=20)
+    bg = polynomial_background(1)
+    m = make_spectral_model(
+        x, y, lorentz_basis, 2, (0.5, 5.0), [(1.0, 5.0)],
+        background_fn=bg, background_priors=[(-1.0, 1.0), (-0.5, 0.5)],
+        noise_prior=log_scale_prior(1e-6, 1.0),
+    )
+    assert m.ndim == 2 * 2 + 2 + 1 and m.n_background == 2 and m.n_noise == 1
+    theta = m.sample_prior(jax.random.PRNGKey(0))
+    peaks, bgp, noise = m.split_background(theta)
+    assert peaks.shape == (4,) and bgp.shape == (2,) and noise.shape == (1,)
+    assert -1.0 <= float(bgp[0]) <= 1.0 and -0.5 <= float(bgp[1]) <= 0.5
+    assert m.split(theta)[0].shape == (6,)
+    np.testing.assert_allclose(m.transform.lower[4:6], [-1.0, -0.5])
+
+    no_bg = make_spectral_model(
+        x, y, lorentz_basis, 2, (0.5, 5.0), [(1.0, 5.0)], noise_prior=log_scale_prior(1e-6, 1.0)
+    )
+    theta_nb = jnp.concatenate([peaks, noise])
+    np.testing.assert_allclose(
+        np.asarray(m.predict(theta) - no_bg.predict(theta_nb)), np.asarray(bg(jnp.asarray(x), bgp)), atol=1e-12
+    )
+    # a background parameter outside its prior has zero density; inside, the gradient is finite
+    assert not np.isfinite(float(m.log_prior(theta.at[4].set(2.0))))
+    assert np.all(np.isfinite(np.asarray(jax.grad(m.log_posterior)(theta))))
+
+
+def test_background_argument_validation():
+    from bayspecdec.jax_backend import arctan_step_background, constant_background
+
+    x, y = _noisy_lorentz_data(0.01, n=20)
+    args = (x, y, lorentz_basis, 1, (0.5, 5.0), [(1.0, 5.0)])
+    with pytest.raises(ValueError):
+        make_spectral_model(*args, sigma2=0.01, background_fn=constant_background)
+    with pytest.raises(ValueError):
+        make_spectral_model(*args, sigma2=0.01, background_priors=[(0.0, 1.0)])
+    with pytest.raises(ValueError):  # arctan step needs six priors
+        make_spectral_model(*args, sigma2=0.01, background_fn=arctan_step_background, background_priors=[(0.0, 1.0)])
+
+
+def test_pt_recovers_step_height_alongside_a_peak():
+    from bayspecdec.jax_backend import arctan_step_background
+
+    rng = np.random.default_rng(3)
+    sigma2 = 0.0025
+    x = np.linspace(0.0, 10.0, 200)
+    truth = np.array([1.0, 5.0, 0.3, 0.0, 0.0, 1.0])  # H, E0, Gamma, A, dE, omega (white line off)
+    peak = 0.8 * np.exp(-0.5 * 8.0 * (x - 3.0) ** 2)
+    y = peak + np.asarray(arctan_step_background(jnp.asarray(x), jnp.asarray(truth))) + rng.normal(0, np.sqrt(sigma2), x.size)
+
+    def gauss(xx, p):
+        mu, b = p
+        return jnp.exp(-0.5 * b[:, None] * (xx[None, :] - mu[:, None]) ** 2)
+
+    m = make_spectral_model(
+        x, y, gauss, 1, (0.1, 3.0), [(1.0, 9.0), (1.0, 30.0)],
+        background_fn=arctan_step_background,
+        background_priors=[(0.0, 2.0), (4.0, 6.0), (0.1, 1.0), (0.0, 0.05), (-0.1, 0.1), (0.5, 2.0)],
+        sigma2=sigma2,
+    )
+    betas = 1.5 ** (np.arange(-14, 1))
+    res = JaxParallelTempering(m, betas, PTConfig(swap_every=5)).run(burn_in=800, samples=1500, seed=0)
+    post = res.samples_by_temperature[-1]
+    H = post[:, 3 * 1]  # first background column (after a, mu, b for K=1)
+    assert abs(H.mean() - 1.0) < 0.05
+    assert abs(post[:, 1].mean() - 3.0) < 0.1  # peak centre unaffected by the step

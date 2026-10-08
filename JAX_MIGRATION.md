@@ -149,3 +149,26 @@ adaptation is skipped.
    (after the likelihood fix).
 4. Port any custom likelihoods and priors as needed. Everything in the numpy package that runs inside a
    sampler now has a JAX counterpart, so the numpy samplers can be retired once your runs agree.
+
+## Adding a background function
+
+`make_spectral_model` accepts an optional background that is added to the peak sum
+(e.g. the arctan absorption edge + white line of Kashiwamura et al., eq. 2):
+
+```python
+from bayspecdec.jax_backend import make_spectral_model, arctan_step_background
+
+model = make_spectral_model(
+    x, y, gaussian_basis, K,
+    amplitude_prior=..., basis_priors=[...],
+    background_fn=arctan_step_background,          # (x, params) -> (n,)
+    background_priors=[H, E0, Gamma, A, dE, omega], # one prior per entry of params
+    sigma2=...,
+)
+peaks, bg, noise = model.split_background(theta)
+```
+
+`theta` is laid out as `[a, basis blocks, background params, noise]`. A custom background is any
+pure JAX function `background_fn(x, params) -> (n,)`; set `background_fn.n_params` to have the
+number of priors checked. Ready-made: `arctan_step_background`, `constant_background`,
+`polynomial_background(degree)`.

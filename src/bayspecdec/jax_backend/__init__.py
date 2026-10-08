@@ -12,6 +12,11 @@ from .model import (
     make_spectral_model,
 )
 from .basis import gaussian_basis, lorentzian_basis
+from .background import (
+    arctan_step_background,
+    constant_background,
+    polynomial_background,
+)
 from .likelihoods import (
     gaussian_log_likelihood,
     gaussian_noise_likelihood,
@@ -44,6 +49,9 @@ __all__ = [
     "gaussian_noise_likelihood",
     "gaussian_basis",
     "lorentzian_basis",
+    "arctan_step_background",
+    "constant_background",
+    "polynomial_background",
     "heteroscedastic_gaussian_log_likelihood",
     "poisson_log_likelihood",
     "poisson_gaussian_log_likelihood",
