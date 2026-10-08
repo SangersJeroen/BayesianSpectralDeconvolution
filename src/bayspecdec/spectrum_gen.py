@@ -19,9 +19,8 @@ def gaussian(
 
 
 def step(x_mesh: np.ndarray, x_0: float, height: float) -> np.ndarray:
-    trace: np.ndarray = np.ones_like(x_mesh)
-    trace[x_mesh >= x_0] * (height + 1)
-    return trace - 1
+    """Heaviside step: 0 for ``x < x_0`` and ``height`` for ``x >= x_0``."""
+    return np.where(x_mesh >= x_0, float(height), 0.0)
 
 
 def bin_idx(x_mesh: np.ndarray, x_0: float) -> int:

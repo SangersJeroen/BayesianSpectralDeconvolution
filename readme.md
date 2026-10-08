@@ -22,5 +22,5 @@ Keywords: Spectroanalysis; Spectral deconvolution; Exchange Monte Carlo method; 
 The package is JAX-only (autodiff HMC/NUTS/RWM within batched exchange Monte Carlo). See
 [`USAGE.md`](USAGE.md) for a quickstart, custom bases, priors, background functions and sampled
 noise, and `notebooks/examples/HMC_example.py` for a complete model-selection run.
-Install with `pip install jax scipy tqdm matplotlib`; the package itself has no build step, so put `src/` on
-`PYTHONPATH`.
+Install with `pip install -e .` (add extras as needed: `.[plots]` for matplotlib diagnostics,
+`.[datagen]` for the numba spectrum generator, `.[test]` to run `pytest`).

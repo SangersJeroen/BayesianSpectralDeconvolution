@@ -3,3 +3,7 @@
 **/__pycache__/**
 .ruff_cache/*
 /src/bayspecdec/spectrum_gen.py
+
+*.egg-info/
+build/
+dist/
