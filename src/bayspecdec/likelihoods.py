@@ -8,11 +8,20 @@ Array = np.ndarray
 
 @runtime_checkable
 class Likelihood(Protocol):
+    """
+    ``n_noise_params`` is the number of noise hyperparameters the likelihood reads from
+    ``context["noise"]`` (0 for a likelihood with fixed noise).
+    """
+
+    n_noise_params: int
+
     def log_prob(
         self, y: Array, prediction: Array, context: Optional[dict] = None
     ) -> float: ...
 
-    def energy(self, y: Array, prediction: Array) -> float: ...
+    def energy(
+        self, y: Array, prediction: Array, context: Optional[dict] = None
+    ) -> float: ...
 
 
 class GaussianNoise:
@@ -20,34 +29,52 @@ class GaussianNoise:
     Gaussian noise observation model.
     y_i = f(x_i) + epsilon_i
     epsilon_i ~ N(0, sigma2)
+
+    Pass a number for ``sigma2`` to keep the noise fixed, or ``sigma2=None`` to treat it as a
+    sampled hyperparameter: the likelihood then reads ``s = log sigma^2`` from
+    ``context["noise"][0]`` (``SpectralModel`` supplies it from the trailing block of ``theta``).
     """
 
-    def __init__(self, sigma2: float):
-        self.sigma2: float = float(sigma2)
+    def __init__(self, sigma2: Optional[float] = None):
+        self.sigma2: Optional[float] = None if sigma2 is None else float(sigma2)
+        if self.sigma2 is not None and self.sigma2 <= 0.0:
+            raise ValueError("sigma2 must be positive")
+        self.n_noise_params: int = 0 if self.sigma2 is not None else 1
 
     @property
     def pref(self) -> float:
+        if self.sigma2 is None:
+            raise ValueError("pref is only defined for a fixed sigma2")
         return 1 / np.sqrt(2 * np.pi * self.sigma2)
+
+    def _sigma2(self, context: Optional[dict]) -> float:
+        if self.sigma2 is not None:
+            return self.sigma2
+        if context is None or "noise" not in context:
+            raise ValueError(
+                "GaussianNoise(sigma2=None) needs context['noise'] = [log sigma^2]"
+            )
+        return float(np.exp(np.asarray(context["noise"], dtype=float).ravel()[0]))
 
     def log_prob(
         self, y: Array, prediction: Array, context: Optional[dict] = None
     ) -> float:
         """Fully normalized log-likelihood."""
+        sigma2 = self._sigma2(context)
         residual: Array = y - prediction
-        lprob: float = (
-            np.log(self.pref)
-            * residual.size
-            * -1
-            / (2 * self.sigma2)
-            * (residual**2).sum()
+        return float(
+            -0.5 * residual.size * np.log(2.0 * np.pi * sigma2)
+            - 0.5 * np.sum(residual**2) / sigma2
         )
-        return lprob
 
-    def energy(self, y: Array, prediction: Array) -> float:
-        return -self.log_prob(y, prediction)
+    def energy(
+        self, y: Array, prediction: Array, context: Optional[dict] = None
+    ) -> float:
+        return -self.log_prob(y, prediction, context)
 
 
 class PoissonNoise:
+    n_noise_params = 0
     """
     Poisson observation model.
 
@@ -78,12 +105,12 @@ class PoissonNoise:
         y = np.asarray(y)
         prediction = np.asarray(prediction)
 
-        if np.any(y <= 0) or np.any(prediction <= 0):
+        if np.any(y < 0) or np.any(prediction <= 0):
             raise ValueError(
-                "Poisson observations and predictions must be non-negative."
+                "Poisson observations must be non-negative and predictions positive."
             )
 
-        if not isinstance(y.dtype, np.int_):
+        if not np.all(y == np.round(y)):
             raise ValueError("Poisson observations must be integers.")
 
         log_likelihood = np.sum(y * np.log(prediction) - prediction - gammaln(y + 1.0))
@@ -94,6 +121,7 @@ class PoissonNoise:
         self,
         y: Array,
         prediction: Array,
+        context: Optional[dict] = None,
     ) -> float:
         """
         Normalized negative average log-likelihood.
@@ -110,7 +138,7 @@ class PoissonNoise:
         Bayesian/tempered inference framework.
         """
         n = y.size
-        return -self.log_prob(y, prediction) / n
+        return -self.log_prob(y, prediction, context) / n
 
 
 class PoissonGaussianNoise:
@@ -130,6 +158,8 @@ class PoissonGaussianNoise:
     The public interface evaluates the likelihood of a complete
     spectrum in one call.
     """
+
+    n_noise_params = 0
 
     def __init__(
         self,
@@ -545,8 +575,9 @@ class PoissonGaussianNoise:
         self,
         y: Array,
         prediction: Array,
+        context: Optional[dict] = None,
     ) -> float:
         """
         Negative log-likelihood of the complete spectrum.
         """
-        return -self.log_prob(y, prediction)
+        return -self.log_prob(y, prediction, context)
