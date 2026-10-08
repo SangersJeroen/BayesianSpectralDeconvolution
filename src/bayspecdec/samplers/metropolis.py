@@ -27,7 +27,12 @@ class MCMCKernel(Protocol):
 
 class RandomWalkMetropolis:
     """
-    Simple Gaussian random-walk Metropolis sampler.
+    Gaussian random-walk Metropolis in the unconstrained coordinates ``z``.
+
+    The proposal is symmetric in ``z``; the target density in ``z`` carries the Jacobian of the
+    map ``z -> theta``, so the acceptance ratio includes ``log|d theta/d z|`` at the proposal
+    and the current state. ``use_log_jacobian=False`` drops it (only valid for an identity
+    transform).
     """
 
     def __init__(
@@ -36,23 +41,31 @@ class RandomWalkMetropolis:
         beta: float,
         rng: np.random.Generator,
         proposal_scales: Optional[Array] = None,
+        use_log_jacobian: bool = True,
     ):
         self.model = model
         self.beta = float(beta)
         self.rng = rng
-        self.proposal_scales = np.asarray(proposal_scales, dtype=float)
+        self.use_log_jacobian = bool(use_log_jacobian)
+        ndim = getattr(model.parameterization, "ndim", 1)
+        self.proposal_scales = (
+            np.full(ndim, 0.1)
+            if proposal_scales is None
+            else np.asarray(proposal_scales, dtype=float)
+        )
 
     def step(self, state: MetropolisState, is_warmup: bool = False) -> MetropolisState:
-        to_z, from_z = (
-            self.model.parameterization.to_z,
-            self.model.parameterization.from_z,
-        )
-        proposal = from_z(
-            to_z(state.theta) + self.rng.normal(0.0, self.proposal_scales)
+        param = self.model.parameterization
+        proposal = param.from_z(
+            param.to_z(state.theta) + self.rng.normal(0.0, self.proposal_scales)
         )
         proposal_log_target = self.model.log_tempered_target(proposal, self.beta)
 
         log_alpha = proposal_log_target - state.log_target
+        if self.use_log_jacobian and np.isfinite(proposal_log_target):
+            log_alpha += param.log_jacobian(proposal) - param.log_jacobian(state.theta)
+        if np.isnan(log_alpha):
+            log_alpha = -np.inf
         accept = np.log(self.rng.random()) < min(0.0, float(log_alpha))
 
         state.attempted += 1
@@ -69,5 +82,6 @@ def metropolis_kernel_factory(
     beta: float,
     rng: np.random.Generator,
     proposal_scales: Optional[Array] = None,
+    use_log_jacobian: bool = True,
 ) -> RandomWalkMetropolis:
-    return RandomWalkMetropolis(model, beta, rng, proposal_scales)
+    return RandomWalkMetropolis(model, beta, rng, proposal_scales, use_log_jacobian)
