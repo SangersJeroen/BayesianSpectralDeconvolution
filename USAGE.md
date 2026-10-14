@@ -89,6 +89,27 @@ Sampled: pass `noise_prior=` instead (default is `s = log sigma^2`, e.g. `log_sc
 marginalised over the noise and comparable across `K` for a fixed noise prior. `model.split(theta)` returns
 `(everything but noise, noise)`.
 
+> **The noise prior is on `s = log sigma^2`, not on `sigma^2`.** A Normal centred on a variance such as
+> `1e-4` means `sigma^2 = exp(1e-4) ~ 1`: noise as large as a normalised spectrum, and peaks that don't
+> line up with the data. Use the helpers below, which work in the right units.
+
+```python
+# centred on a known variance (in the units of the spectrum you pass in); log_std = relative uncertainty
+noise_prior = bsd.noise_prior_from_variance(1e-4, log_std=0.3)
+
+# or straight from a dark frame; `scale` is what you divided the spectrum by when normalising it
+noise_prior = bsd.noise_prior_from_dark_frame(dark, scale=spectrum_max)
+
+# or no estimate at all: log-uniform between two variances
+noise_prior = bsd.log_scale_prior(1e-8, 1e-1)
+```
+
+The dark frame's *variance* sets the noise level; its mean is an offset (subtract it from the spectrum, or
+model it with `constant_background`). `noise_prior_from_dark_frame` uses a width of
+`max(sqrt(2 / (n - 1)), 0.1)` on `log sigma^2`: the sampling error of a variance from `n` pixels, with a
+floor so a huge dark frame doesn't pin `sigma^2` when the spectrum has noise the dark frame lacks (shot
+noise, correlated pixels). Pass `log_std=` to override.
+
 ## Without `make_spectral_model`
 
 `make_spectral_model` only builds a `JaxModel`. The sampler uses just `ndim`, `log_likelihood(theta)`,

@@ -193,6 +193,9 @@ def make_spectral_model(
       hyperparameter(s), appended to ``theta`` — and optionally ``noise_likelihood(y, pred, s)``
       with ``s`` of shape ``(m,)``. The default is Gaussian noise with ``s = [log sigma^2]``,
       so ``noise_prior=log_scale_prior(1e-8, 1e-1)`` alone samples ``sigma^2`` log-uniformly.
+      **The prior acts on ``s = log sigma^2``, not on ``sigma^2``**: a Normal centred on a variance
+      such as 1e-4 would mean ``sigma^2 ~ exp(1e-4) ~ 1``. Build it with ``noise_prior_from_variance`` /
+      ``noise_prior_from_dark_frame`` (centred on a known variance), or ``log_scale_prior`` (log-uniform).
       Use ``model.split(theta)`` to separate the noise columns from the physical ones.
 
     The likelihood stays fully normalised in the sampled mode (the ``-n/2 log sigma^2`` term is

@@ -12,6 +12,7 @@ from bayspecdec import (  # noqa: E402
     UniformPrior,
     JaxModel,
     JaxParallelTempering,
+    NormalPrior,
     PTConfig,
     gaussian_log_likelihood,
     make_spectral_model,
@@ -919,3 +920,89 @@ def test_pt_recovers_step_height_alongside_a_peak():
     H = post[:, 3 * 1]  # first background column (after a, mu, b for K=1)
     assert abs(H.mean() - 1.0) < 0.05
     assert abs(post[:, 1].mean() - 3.0) < 0.1  # peak centre unaffected by the step
+
+
+# --- noise-prior helpers -----------------------------------------------------------------------
+
+
+def test_noise_prior_from_variance_is_a_normal_on_log_variance():
+    from bayspecdec import NormalPrior, noise_prior_from_variance
+
+    p = noise_prior_from_variance(1e-4, log_std=0.3)
+    assert isinstance(p, NormalPrior)
+    assert p.mean == pytest.approx(np.log(1e-4)) and p.std == pytest.approx(0.3)
+    grid = jnp.linspace(np.log(1e-6), np.log(1e-2), 2001)
+    assert float(grid[int(np.argmax(np.asarray(p.log_prob(grid))))]) == pytest.approx(
+        np.log(1e-4), abs=0.01
+    )
+    for bad in (0.0, -1.0, float("inf"), float("nan")):
+        with pytest.raises(ValueError):
+            noise_prior_from_variance(bad)
+    with pytest.raises(ValueError):
+        noise_prior_from_variance(1e-4, log_std=0.0)
+
+
+def test_noise_prior_from_dark_frame_variance_scale_and_width():
+    from bayspecdec import noise_prior_from_dark_frame
+
+    dark = np.random.default_rng(0).normal(
+        37.0, 20.0, size=(100, 100)
+    )  # offset 37 must not matter
+    p = noise_prior_from_dark_frame(dark)
+    assert np.exp(p.mean) == pytest.approx(np.var(dark, ddof=1))
+    assert p.std == pytest.approx(0.1)  # sqrt(2/(n-1)) ~ 0.014 is below the 0.1 floor
+    # normalising the spectrum by 1000 divides the variance by 1000**2, i.e. shifts log sigma^2 by -2 log 1000
+    q = noise_prior_from_dark_frame(dark, scale=1000.0)
+    assert q.mean == pytest.approx(p.mean - 2 * np.log(1000.0))
+    # a small dark frame is wider than the floor, and log_std overrides everything
+    small = np.random.default_rng(1).normal(0.0, 1.0, size=20)
+    assert noise_prior_from_dark_frame(small).std == pytest.approx(np.sqrt(2 / 19))
+    assert noise_prior_from_dark_frame(small, log_std=0.05).std == pytest.approx(0.05)
+    for bad in (np.array([1.0]), np.ones(10)):
+        with pytest.raises(ValueError):
+            noise_prior_from_dark_frame(bad)
+    with pytest.raises(ValueError):
+        noise_prior_from_dark_frame(small, scale=0.0)
+
+
+def test_helper_prior_recovers_noise_and_peak_positions():
+    """The failure mode of putting a variance straight into a Normal: sigma^2 ~ 1 and misplaced peaks."""
+    from bayspecdec import FermiDiracPrior, noise_prior_from_variance
+
+    rng = np.random.default_rng(3)
+    x = np.linspace(0.0, 10.0, 200)
+    sigma2 = 0.01**2
+    clean = 0.6 * np.exp(-0.5 * ((x - 3.0) / 0.3) ** 2) + np.exp(
+        -0.5 * ((x - 7.0) / 0.25) ** 2
+    )
+    y = clean + rng.normal(0.0, np.sqrt(sigma2), x.size)
+
+    def gauss(xx, p):
+        mu, b = p
+        return jnp.exp(-0.5 * b[:, None] * (xx[None, :] - mu[:, None]) ** 2)
+
+    def posterior(noise_prior):
+        model = make_spectral_model(
+            x,
+            y,
+            gauss,
+            2,
+            FermiDiracPrior(1.5, 0.05),
+            [(0.0, 10.0), GammaPrior(2.0, scale=40.0)],
+            noise_prior=noise_prior,
+        )
+        cfg = PTConfig(kernel="hmc", num_leapfrog=15, swap_every=5)
+        result = JaxParallelTempering(model, 1.5 ** (np.arange(-14, 1)), cfg).run(
+            burn_in=600, samples=600, seed=0
+        )
+        return result.samples_by_temperature[-1]
+
+    post = posterior(noise_prior_from_variance(sigma2))
+    assert np.median(np.exp(post[:, -1])) == pytest.approx(sigma2, rel=0.5)
+    np.testing.assert_allclose(
+        np.sort(post[:, 2:4], axis=1).mean(axis=0), [3.0, 7.0], atol=0.05
+    )
+
+    # the unit mistake from the docs: a Normal centred on the variance itself means sigma^2 ~ exp(1e-4) ~ 1
+    wrong = posterior(NormalPrior(sigma2, 0.5 * sigma2))
+    assert np.median(np.exp(wrong[:, -1])) > 0.5

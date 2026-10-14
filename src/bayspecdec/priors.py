@@ -19,6 +19,7 @@ from typing import Optional, Protocol, Sequence, Union, runtime_checkable
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.typing as npt
 
 Array = jax.Array
 
@@ -128,7 +129,7 @@ class NormalPrior:
 
 
 class FermiDiracPrior:
-    lower = 0
+    lower = 0.0
     upper = float("inf")
 
     def __init__(self, mu: float, temperature: float):
@@ -167,6 +168,54 @@ def log_scale_prior(lower: float, upper: float) -> UniformPrior:
     if not (0.0 < lower < upper):
         raise ValueError("need 0 < lower < upper")
     return UniformPrior(math.log(lower), math.log(upper))
+
+
+def noise_prior_from_variance(sigma2: float, log_std: float = 0.3) -> NormalPrior:
+    """
+    Prior for a sampled noise variance centred on a known estimate ``sigma2``.
+
+    The sampled noise parameter is ``s = log sigma^2``, so this is a Normal on ``s`` with mean
+    ``log(sigma2)`` and standard deviation ``log_std`` (the relative uncertainty of the variance:
+    0.3 means roughly a factor ``e**0.3 ~ 1.35`` either way). Use it as ``noise_prior=``.
+
+    ``sigma2`` is a *variance in the units of the spectrum you pass to the model*, so divide a variance
+    measured on raw data by the square of whatever you normalised the spectrum by.
+    """
+    if not (sigma2 > 0.0 and math.isfinite(sigma2)):
+        raise ValueError("sigma2 must be positive and finite")
+    if not log_std > 0.0:
+        raise ValueError("log_std must be positive")
+    return NormalPrior(math.log(sigma2), log_std)
+
+
+def noise_prior_from_dark_frame(
+    dark: npt.ArrayLike, scale: float = 1.0, log_std: Optional[float] = None
+) -> NormalPrior:
+    """
+    ``noise_prior=`` centred on the noise variance measured from a dark frame.
+
+    The *variance* of the dark frame sets the noise level; its mean is an offset, which you should
+    subtract from the spectrum or model with ``constant_background``.
+
+    ``scale``: the factor you divided the spectrum by when normalising it, so that the variance is
+    expressed in the model's units (``var(dark) / scale**2``).
+
+    ``log_std``: width of the Normal on ``log sigma^2``. By default ``max(sqrt(2 / (n - 1)), 0.1)``:
+    the first term is the sampling uncertainty of a variance estimated from ``n`` independent Gaussian
+    pixels; the floor keeps a very large dark frame from pinning ``sigma^2`` when the spectrum has noise
+    the dark frame does not (shot noise, correlated pixels, ...). Pass your own value to override.
+    """
+    values = np.asarray(dark, dtype=float).ravel()
+    if values.size < 2:
+        raise ValueError("need at least two dark-frame values")
+    if not scale > 0.0:
+        raise ValueError("scale must be positive")
+    variance = float(np.var(values, ddof=1)) / scale**2
+    if not variance > 0.0:
+        raise ValueError("the dark frame has zero variance")
+    if log_std is None:
+        log_std = max(math.sqrt(2.0 / (values.size - 1)), 0.1)
+    return noise_prior_from_variance(variance, log_std)
 
 
 def as_prior(spec: PriorSpec) -> JaxPrior:

@@ -28,6 +28,8 @@ from .priors import (
     PriorSpec,
     UniformPrior,
     log_scale_prior,
+    noise_prior_from_dark_frame,
+    noise_prior_from_variance,
     paper_synthetic_priors,
 )
 from .tempering import ExchangeResult, JaxParallelTempering, PTConfig
@@ -60,6 +62,8 @@ __all__ = [
     "PriorSpec",
     "UniformPrior",
     "log_scale_prior",
+    "noise_prior_from_dark_frame",
+    "noise_prior_from_variance",
     "paper_synthetic_priors",
     "ExchangeResult",
     "JaxParallelTempering",
